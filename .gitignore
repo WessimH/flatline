@@ -1,0 +1,6 @@
+/target
+/dist
+.DS_Store
+
+# Design sources (FigCraft mockups) are kept out of git until validated
+/design/

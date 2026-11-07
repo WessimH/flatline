@@ -1,0 +1,31 @@
+[package]
+name = "flatline"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "System-wide headphone calibration for macOS with zero added DSP latency (CoreAudio process taps + minimum-phase EQ)"
+authors = ["Wessim HARMEL"]
+license = "MIT"
+repository = "https://github.com/WessimH/flatline"
+homepage = "https://github.com/WessimH/flatline"
+documentation = "https://wessimh.github.io/flatline/"
+readme = "README.md"
+keywords = ["audio", "headphones", "equalizer", "coreaudio", "dsp"]
+categories = ["multimedia::audio"]
+
+[package.metadata.docs.rs]
+targets = ["aarch64-apple-darwin"]
+
+[dependencies]
+anyhow = "1.0.104"
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "persistence"] }
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSRunningApplication", "NSResponder"] }
+objc2-core-audio = "0.3.2"
+objc2-core-audio-types = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-foundation = "0.3.2"
+realfft = "3.5.1"
+rtrb = "0.4.1"
+serde = { version = "1.0.229", features = ["derive"] }
+tray-icon = "0.26.1"
