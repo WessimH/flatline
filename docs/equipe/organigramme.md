@@ -10,24 +10,9 @@ Les postes, eux, sont de vrais métiers.
 
 ## L'organigramme
 
-- **Wessim Harmel**, fondateur
-  - **Camille Laurent**, Product Owner (`po`)
-    - **Malik Benali**, Business Analyst (`ba`)
-    - **Sofia Marchetti**, Software Architect (`architect`)
-      - **Jonas Lindqvist**, Audio DSP Engineer (`sound-engineer`)
-      - **Yuki Tanaka**, Senior Software Engineer (Rust) (`dev`)
-      - **Lucas Ferreira**, Front-end Developer (`web-dev`)
-      - **Amara Diallo**, QA Engineer (`qa`)
-      - **Nikolai Petrov**, DevOps Engineer (`devops`)
-      - **Tomás Rivera**, Staff Engineer, Code Health (`minimalist`)
-    - **Hélène Dubois**, Principal Engineer, Design Review (`challenger`)
-    - **Inès Moreau**, Product Designer (UX/UI) (`ux-ui`)
-      - **Kenji Mori**, Brand Designer (`graphic-designer`)
-    - **Chloé Martin**, Product Marketing Manager (`marketing`)
-      - **Priya Nair**, Communications Manager (`com`)
-    - **Oscar Nilsson**, Release Manager (`release`)
-    - **Léa Bernard**, Technical Writer (`doc`)
-  - **Nora Haddad**, People Partner (HR) (`hr`)
+![Organigramme de l'équipe Flatline : Wessim Harmel en haut, la PO et la RH sous lui, puis les équipes Product, Engineering, Review, Design et Go-to-market](../.gitbook/assets/team/organigramme.svg)
+
+Chaque couleur est un service. Les traits relient une personne à son responsable.
 
 Le PO et le BA coordonnent le travail : ils font le plan, puis les autres agents l'exécutent.
 Les règles communes sont dans `.claude/TEAM.md`.

@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2406 568" width="2406" height="568" font-family="Helvetica, Arial, sans-serif">
+<rect width="2406" height="568" rx="16" fill="#07060A"/>
+<path d="M695.5 82 V117.0 H1287.0 V152" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M695.5 82 V117.0 H104.0 V152" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M1287.0 214 V249.0 H1924.0 V284" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M1287.0 214 V249.0 H923.0 V284" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M1287.0 214 V249.0 H2288.0 V284" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M1287.0 214 V249.0 H286.0 V284" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M1287.0 214 V249.0 H1560.0 V284" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M1287.0 214 V249.0 H1742.0 V284" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M1287.0 214 V249.0 H2106.0 V284" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M923.0 346 V381.0 H468.0 V416" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M923.0 346 V381.0 H650.0 V416" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M923.0 346 V381.0 H832.0 V416" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M923.0 346 V381.0 H1014.0 V416" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M923.0 346 V381.0 H1196.0 V416" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M923.0 346 V381.0 H1378.0 V416" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M286.0 346 V381.0 H286.0 V416" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<path d="M1560.0 346 V381.0 H1560.0 V416" stroke="#F4EFEA" stroke-opacity="0.35" fill="none"/>
+<rect x="20" y="152" width="168" height="62" rx="12" fill="#1A1620" stroke="#8FB8FF" stroke-width="1.5"/>
+<rect x="20" y="162" width="4" height="42" rx="2" fill="#8FB8FF"/>
+<text x="34" y="176" fill="#F4EFEA" font-size="13" font-weight="700">Nora Haddad</text>
+<text x="34" y="194" fill="#D9CFCB" font-size="11">People Partner (HR)</text>
+<text x="34" y="207" fill="#8FB8FF" font-size="9.5">People · hr</text>
+<rect x="202" y="416" width="168" height="62" rx="12" fill="#1A1620" stroke="#FFC56E" stroke-width="1.5"/>
+<rect x="202" y="426" width="4" height="42" rx="2" fill="#FFC56E"/>
+<text x="216" y="440" fill="#F4EFEA" font-size="13" font-weight="700">Kenji Mori</text>
+<text x="216" y="458" fill="#D9CFCB" font-size="11">Brand Designer</text>
+<text x="216" y="471" fill="#FFC56E" font-size="9.5">Design · graphic-designer</text>
+<rect x="202.0" y="284" width="168" height="62" rx="12" fill="#1A1620" stroke="#FFC56E" stroke-width="1.5"/>
+<rect x="202.0" y="294" width="4" height="42" rx="2" fill="#FFC56E"/>
+<text x="216.0" y="308" fill="#F4EFEA" font-size="13" font-weight="700">Inès Moreau</text>
+<text x="216.0" y="326" fill="#D9CFCB" font-size="11">Product Designer (UX/UI)</text>
+<text x="216.0" y="339" fill="#FFC56E" font-size="9.5">Design · ux-ui</text>
+<rect x="384" y="416" width="168" height="62" rx="12" fill="#1A1620" stroke="#FF7A5C" stroke-width="1.5"/>
+<rect x="384" y="426" width="4" height="42" rx="2" fill="#FF7A5C"/>
+<text x="398" y="440" fill="#F4EFEA" font-size="13" font-weight="700">Jonas Lindqvist</text>
+<text x="398" y="458" fill="#D9CFCB" font-size="11">Audio DSP Engineer</text>
+<text x="398" y="471" fill="#FF7A5C" font-size="9.5">Engineering · sound-engineer</text>
+<rect x="566" y="416" width="168" height="62" rx="12" fill="#1A1620" stroke="#FF7A5C" stroke-width="1.5"/>
+<rect x="566" y="426" width="4" height="42" rx="2" fill="#FF7A5C"/>
+<text x="580" y="440" fill="#F4EFEA" font-size="13" font-weight="700">Yuki Tanaka</text>
+<text x="580" y="458" fill="#D9CFCB" font-size="11">Senior Software Engineer …</text>
+<text x="580" y="471" fill="#FF7A5C" font-size="9.5">Engineering · dev</text>
+<rect x="748" y="416" width="168" height="62" rx="12" fill="#1A1620" stroke="#FF7A5C" stroke-width="1.5"/>
+<rect x="748" y="426" width="4" height="42" rx="2" fill="#FF7A5C"/>
+<text x="762" y="440" fill="#F4EFEA" font-size="13" font-weight="700">Lucas Ferreira</text>
+<text x="762" y="458" fill="#D9CFCB" font-size="11">Front-end Developer</text>
+<text x="762" y="471" fill="#FF7A5C" font-size="9.5">Engineering · web-dev</text>
+<rect x="930" y="416" width="168" height="62" rx="12" fill="#1A1620" stroke="#FF7A5C" stroke-width="1.5"/>
+<rect x="930" y="426" width="4" height="42" rx="2" fill="#FF7A5C"/>
+<text x="944" y="440" fill="#F4EFEA" font-size="13" font-weight="700">Amara Diallo</text>
+<text x="944" y="458" fill="#D9CFCB" font-size="11">QA Engineer</text>
+<text x="944" y="471" fill="#FF7A5C" font-size="9.5">Engineering · qa</text>
+<rect x="1112" y="416" width="168" height="62" rx="12" fill="#1A1620" stroke="#FF7A5C" stroke-width="1.5"/>
+<rect x="1112" y="426" width="4" height="42" rx="2" fill="#FF7A5C"/>
+<text x="1126" y="440" fill="#F4EFEA" font-size="13" font-weight="700">Nikolai Petrov</text>
+<text x="1126" y="458" fill="#D9CFCB" font-size="11">DevOps Engineer</text>
+<text x="1126" y="471" fill="#FF7A5C" font-size="9.5">Engineering · devops</text>
+<rect x="1294" y="416" width="168" height="62" rx="12" fill="#1A1620" stroke="#C9A0FF" stroke-width="1.5"/>
+<rect x="1294" y="426" width="4" height="42" rx="2" fill="#C9A0FF"/>
+<text x="1308" y="440" fill="#F4EFEA" font-size="13" font-weight="700">Tomás Rivera</text>
+<text x="1308" y="458" fill="#D9CFCB" font-size="11">Staff Engineer, Code Heal…</text>
+<text x="1308" y="471" fill="#C9A0FF" font-size="9.5">Review · minimalist</text>
+<rect x="839.0" y="284" width="168" height="62" rx="12" fill="#1A1620" stroke="#FF7A5C" stroke-width="1.5"/>
+<rect x="839.0" y="294" width="4" height="42" rx="2" fill="#FF7A5C"/>
+<text x="853.0" y="308" fill="#F4EFEA" font-size="13" font-weight="700">Sofia Marchetti</text>
+<text x="853.0" y="326" fill="#D9CFCB" font-size="11">Software Architect</text>
+<text x="853.0" y="339" fill="#FF7A5C" font-size="9.5">Engineering · architect</text>
+<rect x="1476" y="416" width="168" height="62" rx="12" fill="#1A1620" stroke="#6FD3C1" stroke-width="1.5"/>
+<rect x="1476" y="426" width="4" height="42" rx="2" fill="#6FD3C1"/>
+<text x="1490" y="440" fill="#F4EFEA" font-size="13" font-weight="700">Priya Nair</text>
+<text x="1490" y="458" fill="#D9CFCB" font-size="11">Communications Manager</text>
+<text x="1490" y="471" fill="#6FD3C1" font-size="9.5">Go-to-market · com</text>
+<rect x="1476.0" y="284" width="168" height="62" rx="12" fill="#1A1620" stroke="#6FD3C1" stroke-width="1.5"/>
+<rect x="1476.0" y="294" width="4" height="42" rx="2" fill="#6FD3C1"/>
+<text x="1490.0" y="308" fill="#F4EFEA" font-size="13" font-weight="700">Chloé Martin</text>
+<text x="1490.0" y="326" fill="#D9CFCB" font-size="11">Product Marketing Manager</text>
+<text x="1490.0" y="339" fill="#6FD3C1" font-size="9.5">Go-to-market · marketing</text>
+<rect x="1658" y="284" width="168" height="62" rx="12" fill="#1A1620" stroke="#6FD3C1" stroke-width="1.5"/>
+<rect x="1658" y="294" width="4" height="42" rx="2" fill="#6FD3C1"/>
+<text x="1672" y="308" fill="#F4EFEA" font-size="13" font-weight="700">Oscar Nilsson</text>
+<text x="1672" y="326" fill="#D9CFCB" font-size="11">Release Manager</text>
+<text x="1672" y="339" fill="#6FD3C1" font-size="9.5">Go-to-market · release</text>
+<rect x="1840" y="284" width="168" height="62" rx="12" fill="#1A1620" stroke="#FF2E4D" stroke-width="1.5"/>
+<rect x="1840" y="294" width="4" height="42" rx="2" fill="#FF2E4D"/>
+<text x="1854" y="308" fill="#F4EFEA" font-size="13" font-weight="700">Malik Benali</text>
+<text x="1854" y="326" fill="#D9CFCB" font-size="11">Business Analyst</text>
+<text x="1854" y="339" fill="#FF2E4D" font-size="9.5">Product · ba</text>
+<rect x="2022" y="284" width="168" height="62" rx="12" fill="#1A1620" stroke="#FF2E4D" stroke-width="1.5"/>
+<rect x="2022" y="294" width="4" height="42" rx="2" fill="#FF2E4D"/>
+<text x="2036" y="308" fill="#F4EFEA" font-size="13" font-weight="700">Léa Bernard</text>
+<text x="2036" y="326" fill="#D9CFCB" font-size="11">Technical Writer</text>
+<text x="2036" y="339" fill="#FF2E4D" font-size="9.5">Product · doc</text>
+<rect x="2204" y="284" width="168" height="62" rx="12" fill="#1A1620" stroke="#C9A0FF" stroke-width="1.5"/>
+<rect x="2204" y="294" width="4" height="42" rx="2" fill="#C9A0FF"/>
+<text x="2218" y="308" fill="#F4EFEA" font-size="13" font-weight="700">Hélène Dubois</text>
+<text x="2218" y="326" fill="#D9CFCB" font-size="11">Principal Engineer, Desig…</text>
+<text x="2218" y="339" fill="#C9A0FF" font-size="9.5">Review · challenger</text>
+<rect x="1203.0" y="152" width="168" height="62" rx="12" fill="#1A1620" stroke="#FF2E4D" stroke-width="1.5"/>
+<rect x="1203.0" y="162" width="4" height="42" rx="2" fill="#FF2E4D"/>
+<text x="1217.0" y="176" fill="#F4EFEA" font-size="13" font-weight="700">Camille Laurent</text>
+<text x="1217.0" y="194" fill="#D9CFCB" font-size="11">Product Owner</text>
+<text x="1217.0" y="207" fill="#FF2E4D" font-size="9.5">Product · po</text>
+<rect x="611.5" y="20" width="168" height="62" rx="12" fill="#1A1620" stroke="#F4EFEA" stroke-width="1.5"/>
+<rect x="611.5" y="30" width="4" height="42" rx="2" fill="#F4EFEA"/>
+<text x="625.5" y="44" fill="#F4EFEA" font-size="13" font-weight="700">Wessim Harmel</text>
+<text x="625.5" y="62" fill="#D9CFCB" font-size="11">Founder</text>
+</svg>

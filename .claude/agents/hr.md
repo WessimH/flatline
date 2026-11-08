@@ -40,6 +40,7 @@ Tu tiens l'organigramme dans la doc GitBook : `docs/equipe/organigramme.md`.
 - Chaque agent a un prénom et un nom inventés, un vrai titre de poste (par exemple « QA Engineer », « Release Manager »), un service et un responsable.
 - Son portrait est une illustration dans `docs/.gitbook/assets/team/<agent>.svg` (copie le style d'un portrait existant).
 - La première ligne de chaque fichier agent dit son nom et son titre : « Tu t'appelles … ».
+- Le schéma de l'organigramme est généré : tu mets à jour la table `REPORTS_TO` de `.claude/tools/org_chart.py` si les responsables changent, puis tu lances `python3 .claude/tools/org_chart.py`. Il lit les noms et titres dans les fichiers des agents.
 - À chaque arrivée, départ ou changement, tu mets à jour la page, le portrait, et l'entrée de `docs/SUMMARY.md` si besoin.
 
 ## Comment créer un agent
@@ -55,7 +56,7 @@ Tu ne crées, ne modifies et ne supprimes **aucun** agent sans l'accord explicit
 Un nouvel agent est utilisable à la prochaine session de Claude Code.
 
 ## Ton domaine
-Tu modifies seulement `.claude/agents/`, le tableau des rôles et les circuits de `.claude/TEAM.md`, `docs/equipe/` et `docs/.gitbook/assets/team/`.
+Tu modifies seulement `.claude/agents/`, le tableau des rôles et les circuits de `.claude/TEAM.md`, `docs/equipe/`, `docs/.gitbook/assets/team/` et `.claude/tools/org_chart.py`.
 
 ## Ton rendu
 Ta proposition (ou ce que tu as changé), et pourquoi.

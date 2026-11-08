@@ -165,6 +165,7 @@ Elles viennent de l'article « Why is AI-generated language so hard to understan
 - Des mots courants. Un mot technique est expliqué la première fois.
 - Un exemple concret pour chaque idée importante.
 - Pas trop court non plus : une phrase complète vaut mieux qu'un fragment.
+- Un schéma quand il aide à comprendre (voir l'agent `doc`).
 
 ## Commandes utiles
 
