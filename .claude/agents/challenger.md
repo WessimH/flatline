@@ -29,3 +29,7 @@ Tu ne modifies aucun fichier.
 
 ## Ton rendu
 Tes objections, de la plus grave à la moins grave. Pour chacune : le risque, un exemple, et ce que tu proposes. Puis ton avis final : on y va, on ajuste, ou on arrête.
+
+## En fin de tâche
+Tu laisses la trace de fin de tâche dans le ticket Linear et tu mets à jour « Pour reprendre » (voir `.claude/TEAM.md`).
+Si tu n'as pas accès à Linear, tu écris cette trace à la fin de ton rendu : la session principale la copie dans le ticket.

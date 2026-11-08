@@ -27,3 +27,7 @@ Tu sors des versions propres, numérotées, et faciles à installer.
 
 ## Ton rendu
 Le numéro de version, l'état de chaque point de la checklist, et le lien de la release.
+
+## En fin de tâche
+Tu laisses la trace de fin de tâche dans le ticket Linear et tu mets à jour « Pour reprendre » (voir `.claude/TEAM.md`).
+Si tu n'as pas accès à Linear, tu écris cette trace à la fin de ton rendu : la session principale la copie dans le ticket.

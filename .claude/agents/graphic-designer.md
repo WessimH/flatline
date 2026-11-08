@@ -27,3 +27,7 @@ Tu modifies seulement `design/`, les images de `assets/` et `site/assets/`.
 
 ## Ton rendu
 Les fichiers créés, avec leur usage, et une capture pour validation.
+
+## En fin de tâche
+Tu laisses la trace de fin de tâche dans le ticket Linear et tu mets à jour « Pour reprendre » (voir `.claude/TEAM.md`).
+Si tu n'as pas accès à Linear, tu écris cette trace à la fin de ton rendu : la session principale la copie dans le ticket.

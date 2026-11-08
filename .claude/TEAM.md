@@ -27,7 +27,7 @@ Pour comprendre le code : `src/lib.rs`, puis les dossiers `src/engine` (audio), 
 | `minimalist` | Empêche le code et les fonctions inutiles. | rien (avis) |
 | `ux-ui` | Parcours, écrans, états, maquettes. | `design/` |
 | `graphic-designer` | Logo, icônes, visuels. | `design/`, `assets/` (images), `site/assets/` |
-| `marketing` | Positionnement et textes de vente. | `README.md` (haut de page), textes de `site/` |
+| `marketing` | Positionnement, textes de vente, suggestions de fonctions. | `README.md` (haut de page), textes de `site/`, tickets « Suggestion » dans Linear |
 | `com` | Notes de version et annonces. | `release-notes/` |
 | `release` | Numéro de version, changelog, tag, GitHub Release. | `CHANGELOG.md`, version dans `Cargo.toml`, tags, releases |
 | `doc` | La doc GitBook, simple à lire pour un humain. | `docs/` |
@@ -46,6 +46,7 @@ Circuits habituels :
 - **Nouvelle fonction** : `po` + `ba` → `architect` → `sound-engineer` (si ça touche au son) → `dev` → `minimalist` → `qa` → `doc`.
 - **Bug** : `qa` (reproduit) → `dev` (corrige) → `qa` (vérifie).
 - **Release** : `qa` → `challenger` → `com` (texte) → `release` (publie) → `marketing` (relais README et site).
+- **Idée de fonction** : `marketing` (ticket « Suggestion » avec preuves) → `po` (garde, met de côté ou refuse) → `ba` (tickets) → circuit « nouvelle fonction ».
 - **Site vitrine** : `marketing` (textes) → `ux-ui` + `graphic-designer` (maquette) → `web-dev` → `qa`.
 
 `challenger` et `minimalist` peuvent être appelés à n'importe quelle étape.
@@ -53,8 +54,61 @@ Circuits habituels :
 ## Linear
 
 Équipe **FlatLine**, clé **FLA** (tickets `FLA-12`…).
-Le PO crée les projets et fixe les priorités, le BA écrit les tickets, le QA ouvre les bugs.
+Le PO crée les projets et fixe les priorités, le BA écrit les tickets, le QA ouvre les bugs, le Marketing propose des idées (libellé « Suggestion »).
 Les autres agents citent le numéro du ticket dans leur rapport.
+
+## Reprendre le travail à tout moment
+
+Wessim doit pouvoir lire n'importe quel ticket et reprendre le travail seul, sans agent.
+Le ticket Linear est donc **la mémoire du projet**. Rien d'important ne reste seulement dans une conversation.
+
+### Le modèle de ticket (écrit par le BA, en français)
+
+```markdown
+## Pourquoi
+Le problème, vu par l'utilisateur, en deux phrases.
+
+## Ce qu'on veut
+Ce que l'utilisateur pourra faire une fois le ticket fini.
+
+## Critères d'acceptation
+- [ ] Une phrase vérifiable par critère (« Quand je débranche le casque, la carte "Disconnected" s'affiche. »)
+
+## Comment ça marche aujourd'hui
+Les fichiers et fonctions concernés, avec leur rôle (`src/ui/app.rs`, fonction `route()` : choisit si on corrige ou si on met en pause).
+
+## Hors périmètre
+Ce qu'on ne fait pas dans ce ticket.
+
+## Pour reprendre
+- **État :** pas commencé / en cours / à tester / fini.
+- **Fait :** …
+- **Reste à faire :** la prochaine étape, assez précise pour la faire soi-même.
+- **Comment vérifier :** les commandes ou les écrans à regarder.
+```
+
+### La trace de fin de tâche (tous les agents)
+
+Quand un agent termine sa part, il ajoute un **commentaire** au ticket :
+
+```markdown
+**[nom de l'agent]** · ce que j'ai fait en une phrase
+- Fichiers touchés : `src/…` (fonction `…`)
+- Vérifié : tests verts, capture de l'écran X
+- Pas vérifié : …
+- Suite : agent suivant et ce qu'il doit faire
+```
+
+Puis il met à jour la section **Pour reprendre** et le statut du ticket.
+
+### Les statuts Linear
+
+- **Backlog** : idée gardée, pas encore planifiée.
+- **Todo** : prêt à faire (critères écrits).
+- **In Progress** : quelqu'un travaille dessus.
+- **In Review** : fini, en test par le QA.
+- **Done** : critères vérifiés.
+- **Canceled** : abandonné (avec la raison en commentaire).
 
 ## Langues
 

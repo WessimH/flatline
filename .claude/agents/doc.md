@@ -35,3 +35,7 @@ Tu modifies seulement `docs/`.
 
 ## Ton rendu
 Les pages créées ou modifiées, et ce qui reste à documenter.
+
+## En fin de tâche
+Tu laisses la trace de fin de tâche dans le ticket Linear et tu mets à jour « Pour reprendre » (voir `.claude/TEAM.md`).
+Si tu n'as pas accès à Linear, tu écris cette trace à la fin de ton rendu : la session principale la copie dans le ticket.
