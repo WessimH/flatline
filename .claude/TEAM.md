@@ -13,6 +13,9 @@ Pour comprendre le code : `src/lib.rs`, puis les dossiers `src/engine` (audio), 
 
 ## Qui fait quoi
 
+L'organigramme avec les noms et les postes est dans `docs/equipe/organigramme.md`.
+
+
 | Agent | Rôle en une phrase | Peut modifier |
 |---|---|---|
 | `po` | Décide quoi faire et pourquoi, fixe les priorités. | Linear |
@@ -30,7 +33,8 @@ Pour comprendre le code : `src/lib.rs`, puis les dossiers `src/engine` (audio), 
 | `marketing` | Positionnement, textes de vente, suggestions de fonctions. | `README.md` (haut de page), textes de `site/`, tickets « Suggestion » dans Linear |
 | `com` | Notes de version et annonces. | `release-notes/` |
 | `release` | Numéro de version, changelog, tag, GitHub Release. | `CHANGELOG.md`, version dans `Cargo.toml`, tags, releases |
-| `doc` | La doc GitBook, simple à lire pour un humain. | `docs/` |
+| `doc` | La doc GitBook, simple à lire pour un humain. | `docs/` (sauf `docs/equipe/`) |
+| `hr` | Recrute (crée) ou retire des agents, et tient le budget de tokens. | `.claude/agents/`, le tableau ci-dessus |
 
 Un agent ne modifie jamais un fichier hors de sa colonne « Peut modifier ».
 S'il voit un problème ailleurs, il le signale dans son rapport.
@@ -47,9 +51,41 @@ Circuits habituels :
 - **Bug** : `qa` (reproduit) → `dev` (corrige) → `qa` (vérifie).
 - **Release** : `qa` → `challenger` → `com` (texte) → `release` (publie) → `marketing` (relais README et site).
 - **Idée de fonction** : `marketing` (ticket « Suggestion » avec preuves) → `po` (garde, met de côté ou refuse) → `ba` (tickets) → circuit « nouvelle fonction ».
+- **Besoin d'un nouveau rôle** : `po` constate le manque → `hr` propose l'agent → Wessim valide → `hr` le crée.
 - **Site vitrine** : `marketing` (textes) → `ux-ui` + `graphic-designer` (maquette) → `web-dev` → `qa`.
 
 `challenger` et `minimalist` peuvent être appelés à n'importe quelle étape.
+
+## Comment le travail est organisé
+
+On reprend le fonctionnement d'une entreprise. Le travail a cinq niveaux, du plus large au plus précis :
+
+1. **Initiative** : un grand objectif sur plusieurs mois. Exemple : « Sortir Flatline 1.0 en public ».
+2. **Projet** : un chantier qui sert une initiative, avec une date cible. Exemple : « Site vitrine ».
+3. **Milestone** : une étape visible d'un projet. Exemple : « maquette validée », puis « site en ligne ».
+4. **Ticket** : une tâche qu'un seul agent peut finir. Exemple : « FLA-12 : coder la page d'accueil ».
+5. **Cycle** : le sprint de deux semaines, c'est-à-dire les tickets qu'on fait maintenant.
+
+Qui fait quoi :
+- Le **PO** crée les initiatives et les projets, fixe les dates et choisit le contenu de chaque cycle.
+- Le **PO et le BA** découpent un projet en milestones.
+- Le **BA** écrit les tickets et rattache chacun à son projet et à sa milestone.
+- Tout ticket appartient à un projet. Un ticket sans projet est une idée à trier (Backlog).
+
+Chaque projet a une description courte : pourquoi on le fait, à quelle initiative il sert, comment on sait qu'il est fini.
+Le PO écrit un point d'avancement sur le projet (« status update ») à chaque fin de milestone.
+
+## Le budget : les tokens
+
+Le budget de l'équipe, ce sont les tokens de Wessim. Ils se rechargent **toutes les 5 heures**.
+Quand ils sont épuisés, plus aucun agent ne travaille jusqu'à la recharge.
+
+Ce que ça implique pour tout le monde :
+- **Chaque appel d'agent coûte.** Opus coûte le plus cher, puis Sonnet, puis Haiku. On appelle seulement les agents utiles à la tâche, pas tout le circuit par habitude.
+- **Un agent lit seulement ce dont il a besoin.** Pas de lecture de tout le dépôt « pour comprendre » : il part du ticket et des fichiers qu'il cite.
+- **Le travail se découpe en morceaux de moins de 5 heures.** Un ticket doit pouvoir être fini dans une seule fenêtre.
+- **La trace « Pour reprendre » passe avant tout.** Si le budget baisse, l'agent s'arrête proprement, écrit où il en est, et rend la main. Mieux vaut un travail à moitié fait mais bien noté qu'un travail perdu.
+- Le PO dimensionne chaque plan : il indique les agents à appeler et leur modèle, et garde les agents Opus pour ce qui en a vraiment besoin.
 
 ## Linear
 
