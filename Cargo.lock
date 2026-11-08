@@ -651,6 +651,7 @@ name = "flatline"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2 0.6.2",
  "eframe",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -659,6 +660,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "realfft",
+ "ron",
  "rtrb",
  "serde",
  "tray-icon",

@@ -25,6 +25,7 @@
 //! | [`analyzer`] | FFT real-time analyzer (1/6-octave RTA) fed from the audio thread. |
 //! | [`profiles`] | Built-in headphone measurements, target curves and presets. |
 //! | [`login`] | "Launch at login" through a per-user LaunchAgent. |
+//! | [`log`] | Append-only diagnostic log in `~/Library/Logs/Flatline`. |
 //! | [`ui`] | The egui interface, menu-bar icon and app icon. |
 //!
 //! ## Latency
@@ -44,8 +45,10 @@
 #![warn(missing_docs)]
 
 pub mod analyzer;
+pub mod catalog;
 pub mod dsp;
 pub mod engine;
+pub mod log;
 pub mod login;
 pub mod profiles;
 pub mod ui;

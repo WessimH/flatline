@@ -262,10 +262,14 @@ struct IoState {
 
 impl Engine {
     /// Starts system-wide processing on `output_uid` (or the default output).
+    ///
+    /// `prefer_device_tap` taps the device's own stream (low latency); when it is
+    /// false, or the device refuses it, the global stereo mix tap is used.
     /// `eq_for_rate` builds the EQ once the device sample rate is known.
     pub fn start(
         output_uid: Option<&str>,
         buffer_frames: u32,
+        prefer_device_tap: bool,
         shared: Arc<Shared>,
         eq_for_rate: impl FnOnce(f64) -> EqSettings,
     ) -> Result<Engine> {
@@ -308,7 +312,7 @@ impl Engine {
             d.setMuteBehavior(CATapMuteBehavior::MutedWhenTapped);
             d
         };
-        let mut device_tap = std::env::var("FL_TAP").as_deref() != Ok("global");
+        let mut device_tap = prefer_device_tap && std::env::var("FL_TAP").as_deref() != Ok("global");
         let mut tap: AudioObjectID = 0;
         let mut desc = make_desc(device_tap);
         if device_tap && unsafe { AudioHardwareCreateProcessTap(Some(&desc), &mut tap) } != 0 {
@@ -521,7 +525,10 @@ fn create_aggregate(output_uid: &str, tap_uid: &str) -> Result<AudioObjectID> {
             as_obj(&*out_uid),
             as_obj(&*subs),
             as_obj(&*taps),
-            as_obj(&*one),
+            // Tap auto-start OFF: with it on, CoreAudio only starts the tap
+            // (and our IO) once some app is playing to the device ("waiting
+            // for writers"), so a silent system looked like a blocked engine.
+            as_obj(&*zero),
         ],
     );
     // NSDictionary is toll-free bridged with CFDictionary.

@@ -74,7 +74,3 @@ pub static TARGETS: &[TargetDef] = &[
         csv: include_str!("../data/targets/oratory1990 optimum hifi over-ear.csv"),
     },
 ];
-
-/// Quick "sound" presets: (label, bass dB, tilt dB/oct).
-pub static PRESETS: &[(&str, f64, f64)] =
-    &[("Flat", 0.0, 0.0), ("Studio", 3.0, 0.0), ("Harman", 6.5, 0.0), ("Warm", 8.0, -0.3)];

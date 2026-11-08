@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
-# Builds dist/Flatline.app (release, ad-hoc signed).
+# Builds dist/Flatline.app (release, signed).
+#
+#   ./scripts/bundle.sh                     build and sign
+#   ./scripts/bundle.sh --reset-permission  also reset the System Audio Recording
+#                                           permission, so macOS asks again on the
+#                                           next launch (only needed if it was refused)
 # The bundle is required: macOS only grants "System Audio Recording" to an app
 # that declares NSAudioCaptureUsageDescription in its Info.plist.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
+
+RESET=0
+for arg in "$@"; do
+  case "$arg" in
+    --reset-permission) RESET=1 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
 
 cargo build --release
 
@@ -42,9 +55,21 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ad-hoc signature with an identifier-based designated requirement, so the
-# "System Audio Recording" permission survives rebuilds (instead of being
-# tied to the binary hash).
-codesign --force --sign - --identifier dev.flatline.app \
-  -r='designated => identifier "dev.flatline.app"' "$APP"
-echo "Built $APP"
+# The "System Audio Recording" permission is keyed to the bundle identifier,
+# which both signing modes keep stable, so it survives rebuilds. The optional
+# "Flatline Dev" identity (scripts/make-signing-identity.sh) gives the app a
+# real signature instead of an ad-hoc one.
+IDENTITY="Flatline Dev"
+if security find-identity -v -p codesigning | grep -q "\"$IDENTITY\""; then
+  codesign --force --sign "$IDENTITY" --identifier dev.flatline.app "$APP"
+  echo "Built $APP (signed with \"$IDENTITY\")"
+else
+  codesign --force --sign - --identifier dev.flatline.app \
+    -r='designated => identifier "dev.flatline.app"' "$APP"
+  echo "Built $APP (ad-hoc signed)"
+fi
+
+if [ "$RESET" = 1 ]; then
+  tccutil reset All dev.flatline.app >/dev/null
+  echo "System Audio Recording permission reset: launch Flatline and click Allow."
+fi

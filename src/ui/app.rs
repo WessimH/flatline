@@ -1,28 +1,47 @@
 //! The main window: settings, engine lifecycle (start, restart on device or
 //! sample-rate change, permission retries), menu-bar mode and every panel.
 
-use super::graph::{self, Layers};
-use super::theme::*;
+use super::graph::Layers;
+use super::theme::install;
 use super::tray::{self, Tray, TrayAction};
-use super::widgets;
 use crate::analyzer::Analyzer;
-use crate::dsp::biquad::{Filter, FilterKind, cascade_response};
+use crate::catalog::{Catalog, Entry, Form};
+use crate::dsp::biquad::{Filter, cascade_response};
 use crate::dsp::curve::{Curve, band_mean};
 use crate::dsp::fit::{self, Design, DesignParams};
 use crate::dsp::processor::EqSettings;
 use crate::engine::{self, Device, Engine, Shared};
 use crate::profiles;
-use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, Frame, Key, Layout, Margin, Pos2, Rect, RichText, ScrollArea, Sense,
-    Stroke, Ui, Vec2,
-};
+use eframe::egui::{self, Frame, Key, Ui};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-const CUSTOM: usize = usize::MAX;
-const SETTINGS_VERSION: u32 = 3;
+mod onboarding;
+mod views;
+
+/// [`Settings::headphone_key`] of a dropped measurement.
+const CUSTOM_KEY: &str = "custom";
+/// Catalog key of the default headphones.
+const DEFAULT_KEY: &str = "oratory1990/Beyerdynamic DT 770 Pro";
+/// Keys of the four built-in measurements of earlier versions (v3 index).
+const LEGACY_KEYS: [&str; 4] = [
+    "oratory1990/Beyerdynamic DT 770 Pro",
+    "oratory1990/Beyerdynamic DT 770 Pro (worn earpads)",
+    "oratory1990/Beyerdynamic DT 770 Pro (Dekoni hybrid earpads)",
+    "oratory1990/Beyerdynamic DT770 Pro X Limited Edition",
+];
+/// How long a freshly started engine may stay silent before it counts as
+/// blocked. CoreAudio can take ~3 s to start IO on a tap aggregate (TCC check,
+/// recording-indicator handshake): tearing it down earlier kills it just
+/// before it starts.
+const START_GRACE: Duration = Duration::from_secs(8);
+/// Delay before retrying a blocked engine: 10 s, doubling up to 60 s.
+fn retry_delay(retries: u32) -> Duration {
+    Duration::from_secs((10u64 << retries.min(3)).min(60))
+}
+const SETTINGS_VERSION: u32 = 4;
 const BUFFER_SIZES: [u32; 5] = [64, 128, 256, 512, 1024];
 const SETTINGS_URL: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 
@@ -41,9 +60,20 @@ pub struct CustomCurve {
 #[serde(default)]
 /// Everything the user can change, persisted between launches.
 pub struct Settings {
-    /// Index into [`crate::profiles::HEADPHONES`], or a custom curve.
-    pub headphone: usize,
-    /// Index into [`crate::profiles::TARGETS`].
+    /// Settings v3 and earlier: index into the old built-in list (or
+    /// `usize::MAX` for a custom curve). Read once, migrated to
+    /// [`Settings::headphone_key`], never written.
+    #[serde(rename = "headphone", default, skip_serializing, deserialize_with = "legacy_index")]
+    pub legacy_headphone: Option<usize>,
+    /// The headphones: a catalog key ([`crate::catalog::Entry::key`]), or
+    /// `"custom"` for a measurement dropped on the window.
+    pub headphone_key: String,
+    /// The user's headphones (catalog keys), listed in the switcher.
+    pub my_headphones: Vec<String>,
+    /// First-run setup done.
+    pub onboarded: bool,
+    /// 0 = the target of the measurement rig, 1 = oratory1990 Optimum
+    /// (oratory1990 over-ear measurements and custom curves only).
     pub target: usize,
     /// Bass, tilt, boost limit and band count.
     pub params: DesignParams,
@@ -63,17 +93,33 @@ pub struct Settings {
     pub custom: Option<CustomCurve>,
     /// Visible layers of the frequency-response graph.
     pub layers: Layers,
+    /// UID of the output the headphones are plugged into (learned the first
+    /// time Flatline runs on a non-speaker output, or chosen in Settings).
+    /// When the system output is anything else, the correction pauses.
+    pub headphone_output: Option<String>,
+    /// Display name of [`Settings::headphone_output`].
+    pub headphone_output_name: Option<String>,
     /// Field-level default (0) so files from older builds get migrated.
     #[serde(default)]
     pub version: u32,
 }
 
+/// Reads the bare integer older versions wrote (RON would expect `Some(n)`
+/// for an `Option`, and a mismatch would discard every setting).
+fn legacy_index<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
+    usize::deserialize(d).map(Some)
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            headphone: 0,
+            legacy_headphone: None,
+            headphone_key: DEFAULT_KEY.into(),
+            my_headphones: Vec::new(),
+            onboarded: false,
             target: 0,
-            params: DesignParams::default(),
+            // AutoEq's bass shelf for the Harman over-ear 2018 target.
+            params: DesignParams { bass_db: 6.0, ..DesignParams::default() },
             amount: 1.0,
             enabled: true,
             level_match: true,
@@ -82,16 +128,64 @@ impl Default for Settings {
             engine_on: true,
             custom: None,
             layers: Layers::default(),
+            headphone_output: None,
+            headphone_output_name: None,
             version: SETTINGS_VERSION,
         }
     }
+}
+
+/// What the correction does, given the output the headphones are on (`hp`,
+/// `None` = not known yet), the output audio goes to (`want`), whether the
+/// headphones' output is connected, and whether it is paused already.
+#[derive(Debug, PartialEq)]
+enum Route {
+    /// Keep correcting (or keep the current state).
+    Run,
+    /// Stop: the system plays somewhere else.
+    Pause(Status),
+    /// Start again: the headphones are back.
+    Resume,
+}
+
+fn route_decision(hp: Option<&str>, want: Option<&str>, hp_present: bool, paused: bool) -> Route {
+    match hp {
+        Some(h) if want != Some(h) => {
+            Route::Pause(if hp_present { Status::OutputChanged } else { Status::Disconnected })
+        }
+        _ if paused => Route::Resume,
+        _ => Route::Run,
+    }
+}
+
+/// Upgrades settings saved by an older version (no side effects).
+fn migrate(s: &mut Settings) {
+    if s.version < 2 {
+        // v2: low-latency device tap → smaller default buffer.
+        s.buffer_frames = 128;
+    }
+    if s.version < 4 {
+        // v4: the AutoEq catalog replaces the four built-in measurements;
+        // people upgrading have already set Flatline up.
+        s.headphone_key = match s.legacy_headphone.take() {
+            Some(usize::MAX) => CUSTOM_KEY.into(),
+            Some(i) => LEGACY_KEYS[i.min(LEGACY_KEYS.len() - 1)].into(),
+            None => DEFAULT_KEY.into(),
+        };
+        s.onboarded = true;
+        // The old "Harman" preset (6.5 dB) becomes AutoEq's 6 dB.
+        if (s.params.bass_db - 6.5).abs() < 1e-9 {
+            s.params.bass_db = 6.0;
+        }
+    }
+    s.version = s.version.max(SETTINGS_VERSION);
 }
 
 // ----------------------------------------------------------- designer ----
 
 #[derive(Clone, Debug, PartialEq)]
 struct DesignKey {
-    headphone: usize,
+    headphone: String,
     custom_len: usize,
     target: usize,
     params: DesignParams,
@@ -220,6 +314,12 @@ enum Status {
     Live,
     Blocked,
     Error,
+    /// The Mac is asleep: CoreAudio pauses IO, nothing to retry until wake.
+    Asleep,
+    /// The headphones' output is gone: correction paused until it returns.
+    Disconnected,
+    /// The system switched to another output (e.g. AirPods): paused.
+    OutputChanged,
 }
 
 // ---------------------------------------------------------------- app ----
@@ -257,12 +357,40 @@ pub struct FlatlineApp {
     shot: Option<(std::path::PathBuf, u32, Arc<std::sync::atomic::AtomicBool>)>,
     /// Demo mode: factory settings, never persisted.
     demo: bool,
+    /// Consecutive restarts that came up blocked (drives the tap fallback).
+    blocked_retries: u32,
+    /// Whether the current engine has delivered non-silent audio yet.
+    signal_seen: bool,
     tray: Option<Tray>,
+    /// System sleep / wake notifications.
+    power: super::power::PowerWatch,
     started: Instant,
     /// Window hidden, running from the menu bar.
     hidden: bool,
     quitting: bool,
     login_enabled: bool,
+    /// The living light behind the interface.
+    aura: super::aura::Aura,
+    /// Settings sheet open.
+    settings_open: bool,
+    /// Headphone switcher popover open.
+    switcher_open: bool,
+    /// The disconnected / output-changed card was dismissed by the user.
+    pause_card_dismissed: bool,
+    /// Name of the output the system is using while paused.
+    current_output_name: String,
+    /// The switcher was drawn last frame (outside-click handling).
+    switcher_shown: bool,
+    /// Smoothed level bars for the Output card.
+    bar_levels: Vec<f32>,
+    /// Last clipping toast (rate limit).
+    last_clip_toast: Option<Instant>,
+    /// Demo only: FL_STATE=bypass|disconnected|changed|blocked|error|asleep|
+    /// switcher|settings|welcome|access|pick|sound forces a screen for
+    /// screenshots.
+    forced: Option<String>,
+    /// First-run setup, or the headphone picker opened from the switcher.
+    onb: Option<onboarding::Onboarding>,
 }
 
 impl FlatlineApp {
@@ -271,26 +399,27 @@ impl FlatlineApp {
         install(&cc.egui_ctx);
         // FL_DEMO=1: factory settings, nothing saved (screenshots, demos).
         let demo = std::env::var_os("FL_DEMO").is_some();
+        crate::log::log(format!(
+            "Flatline {} launched (background: {}, demo: {demo})",
+            env!("CARGO_PKG_VERSION"),
+            std::env::args().any(|a| a == "--background")
+        ));
         let mut s: Settings = if demo {
             Settings::default()
         } else {
             cc.storage.and_then(|st| eframe::get_value(st, eframe::APP_KEY)).unwrap_or_default()
         };
-        if s.version < 2 {
-            // v2: low-latency device tap → smaller default buffer.
-            s.buffer_frames = 128;
-            s.version = 2;
-        }
         if s.version < 3 && crate::login::bundle_path().is_some() {
             // v3: menu-bar mode, launch at login on by default.
             let _ = crate::login::set_enabled(true);
-            s.version = 3;
         }
+        migrate(&mut s);
         if crate::login::is_enabled() && crate::login::bundle_path().is_some() {
             let _ = crate::login::set_enabled(true); // refresh the path if the app moved
         }
         let background = std::env::args().any(|a| a == "--background");
         let tray = Tray::new(cc.egui_ctx.clone(), s.enabled);
+        let power = super::power::PowerWatch::new(cc.egui_ctx.clone());
         if background && tray.is_some() {
             tray::set_dock_visible(false);
         }
@@ -326,21 +455,44 @@ impl FlatlineApp {
             custom_curve,
             toast: None,
             demo,
+            blocked_retries: 0,
+            signal_seen: false,
             shot: std::env::var_os("FL_SHOT").map(|p| (p.into(), 0, Default::default())),
             hidden: background && tray.is_some(),
+            power,
             started: now,
             tray,
             quitting: false,
             login_enabled: crate::login::is_enabled(),
+            aura: super::aura::Aura::default(),
+            settings_open: false,
+            switcher_open: false,
+            pause_card_dismissed: false,
+            current_output_name: String::new(),
+            switcher_shown: false,
+            bar_levels: vec![0.0; 24],
+            last_clip_toast: None,
+            forced: if demo { std::env::var("FL_STATE").ok() } else { None },
+            onb: None,
             s,
         };
-        if app.s.headphone == CUSTOM && app.custom_curve.is_none() {
-            app.s.headphone = 0;
+        if (app.s.headphone_key == CUSTOM_KEY && app.custom_curve.is_none())
+            || (app.s.headphone_key != CUSTOM_KEY && Catalog::get().find(&app.s.headphone_key).is_none())
+        {
+            app.s.headphone_key = DEFAULT_KEY.into();
         }
-        app.s.headphone =
-            if app.s.headphone == CUSTOM { CUSTOM } else { app.s.headphone.min(profiles::HEADPHONES.len() - 1) };
-        app.s.target = app.s.target.min(profiles::TARGETS.len() - 1);
-        if app.s.engine_on {
+        let key = app.s.headphone_key.clone();
+        app.remember_headphones(&key);
+        app.s.target = app.s.target.min(1);
+        if let Some(f) = app.forced.clone() {
+            app.s.onboarded = !matches!(f.as_str(), "welcome" | "access" | "pick" | "sound");
+        }
+        if !app.s.onboarded {
+            app.onb = Some(onboarding::Onboarding::new(&app.forced));
+        }
+        // First run: the engine (and the macOS permission prompt) waits for
+        // the "Allow access" step.
+        if app.s.engine_on && app.s.onboarded {
             app.start_engine();
         }
         app
@@ -350,19 +502,83 @@ impl FlatlineApp {
         self.engine.as_ref().map_or(48_000.0, |e| e.info.sample_rate)
     }
 
-    fn headphone(&self) -> (Curve, String, String) {
-        if self.s.headphone == CUSTOM
-            && let (Some(c), Some(m)) = (&self.custom_curve, &self.s.custom)
-        {
-            return (c.clone(), m.name.clone(), "Custom measurement (drag & drop)".into());
+    /// The selected catalog entry (`None` for a custom measurement).
+    fn entry(&self) -> Option<&'static Entry> {
+        if self.s.headphone_key == CUSTOM_KEY {
+            return None;
         }
-        let p = &profiles::HEADPHONES[self.s.headphone];
-        (p.curve(), p.name.into(), p.note.into())
+        let cat = Catalog::get();
+        cat.find(&self.s.headphone_key).or_else(|| cat.find(DEFAULT_KEY)).or_else(|| cat.entries().first())
+    }
+
+    /// Whether the oratory1990 Optimum target applies (GRAS over-ear data).
+    fn optimum_allowed(&self) -> bool {
+        self.entry().is_none_or(|e| e.source == "oratory1990" && e.form == Form::OverEar)
+    }
+
+    /// Measurement and target curves of the selected headphones.
+    fn headphone_curves(&self) -> (Curve, Curve) {
+        let optimum = self.s.target == 1 && self.optimum_allowed();
+        match (self.entry(), &self.custom_curve) {
+            (Some(e), _) => {
+                let tg = if optimum { profiles::TARGETS[1].curve() } else { Catalog::get().target(e) };
+                (Catalog::get().curve(e), tg)
+            }
+            (None, Some(c)) => (c.clone(), profiles::TARGETS[usize::from(optimum)].curve()),
+            (None, None) => (profiles::HEADPHONES[0].curve(), profiles::TARGETS[0].curve()),
+        }
+    }
+
+    /// Display name of the selected headphones, e.g. `DT 770 Pro · Worn pads`.
+    fn headphone_name(&self) -> String {
+        let (model, variant) = self.headphone_label();
+        match variant {
+            Some(v) => format!("{model} · {v}"),
+            None => model,
+        }
+    }
+
+    /// Model and variant of the selected headphones.
+    fn headphone_label(&self) -> (String, Option<String>) {
+        match (self.entry(), &self.s.custom) {
+            (Some(e), _) => (e.model.to_owned(), e.variant.map(str::to_owned)),
+            (None, Some(c)) => (c.name.clone(), Some("Your measurement".into())),
+            (None, None) => ("Headphones".into(), None),
+        }
+    }
+
+    /// Name of the target in use.
+    fn target_name(&self) -> String {
+        if self.s.target == 1 && self.optimum_allowed() {
+            return profiles::TARGETS[1].name.into();
+        }
+        self.entry().map_or(profiles::TARGETS[0].name, |e| Catalog::get().target_name(e)).to_owned()
+    }
+
+    /// Selects headphones by catalog key (or [`CUSTOM_KEY`]).
+    fn select_headphones(&mut self, key: &str) {
+        if key != self.s.headphone_key {
+            self.s.headphone_key = key.to_owned();
+            if !self.optimum_allowed() {
+                self.s.target = 0;
+            }
+        }
+        self.remember_headphones(key);
+    }
+
+    /// Puts `key` at the top of the switcher list (catalog keys only).
+    fn remember_headphones(&mut self, key: &str) {
+        if key == CUSTOM_KEY {
+            return;
+        }
+        self.s.my_headphones.retain(|k| k != key);
+        self.s.my_headphones.insert(0, key.to_owned());
+        self.s.my_headphones.truncate(8);
     }
 
     fn design_key(&self) -> DesignKey {
         DesignKey {
-            headphone: self.s.headphone,
+            headphone: self.s.headphone_key.clone(),
             custom_len: self.s.custom.as_ref().map_or(0, |c| c.csv.len() ^ c.name.len() << 20),
             target: self.s.target,
             params: self.s.params,
@@ -373,24 +589,92 @@ impl FlatlineApp {
     fn start_engine(&mut self) {
         self.engine = None; // tear down the previous tap/aggregate first
         self.last_restart = Instant::now();
+        // Device tap first; if it keeps coming up blocked, alternate with the
+        // global-mix tap (some device states refuse the device tap).
+        let prefer_device_tap = self.blocked_retries < 2 || self.blocked_retries % 2 == 1;
         let filters = self.design.as_ref().map(|d| d.filters.clone()).unwrap_or_default();
         let (amount, lm) = (self.s.amount, self.s.level_match);
         let uid = self.s.output_uid.clone().filter(|u| self.devices.iter().any(|d| &d.uid == u));
         let frames = std::env::var("FL_BUF").ok().and_then(|v| v.parse().ok()).unwrap_or(self.s.buffer_frames);
-        match Engine::start(uid.as_deref(), frames, self.shared.clone(), move |fs| build_eq(&filters, amount, lm, fs).0)
-        {
+        match Engine::start(uid.as_deref(), frames, prefer_device_tap, self.shared.clone(), move |fs| {
+            build_eq(&filters, amount, lm, fs).0
+        }) {
             Ok(e) => {
+                crate::log::log(format!(
+                    "engine started: {} ({}) · {:.0} Hz · {} frames · {} · in {:?} out {:?}",
+                    e.info.device.name,
+                    e.info.device.uid,
+                    e.info.sample_rate,
+                    e.info.buffer_frames,
+                    e.info.tap_mode,
+                    e.info.in_layout,
+                    e.info.out_layout
+                ));
                 self.analyzer.set_rate(e.info.sample_rate);
                 self.engine = Some(e);
                 self.engine_error = None;
                 self.status = Status::Starting;
+                self.signal_seen = false;
                 self.cb_seen = (self.shared.callbacks.load(Relaxed), Instant::now());
                 self.eq_key = None;
             }
             Err(err) => {
+                crate::log::log(format!("engine failed to start: {err:#}"));
                 self.engine_error = Some(format!("{err:#}"));
                 self.status = Status::Error;
             }
+        }
+    }
+
+    /// Correction follows the headphones: if the system output is not the one
+    /// they are on, stop and show why (disconnected, or switched to another
+    /// output); restart when they come back. Returns true while paused.
+    fn route(&mut self) -> bool {
+        let want =
+            self.s.output_uid.clone().filter(|u| self.devices.iter().any(|d| &d.uid == u)).or(self.default_uid.clone());
+        let paused = matches!(self.status, Status::Disconnected | Status::OutputChanged);
+        // Learn where the headphones are the first time we run live on
+        // something other than the built-in speakers.
+        if self.s.headphone_output.is_none()
+            && self.status == Status::Live
+            && let Some(e) = &self.engine
+            && !e.info.device.uid.contains("BuiltInSpeaker")
+        {
+            crate::log::log(format!("headphones are on {} ({})", e.info.device.name, e.info.device.uid));
+            self.s.headphone_output = Some(e.info.device.uid.clone());
+            self.s.headphone_output_name = Some(e.info.device.name.clone());
+        }
+        if !self.s.engine_on || self.power.is_sleeping() {
+            return false;
+        }
+        let hp = self.s.headphone_output.as_deref();
+        let present = hp.is_some_and(|h| self.devices.iter().any(|d| d.uid == h));
+        match route_decision(hp, want.as_deref(), present, paused) {
+            Route::Run => false,
+            Route::Resume => {
+                crate::log::log("headphones are back: resuming");
+                self.pause_card_dismissed = false;
+                self.start_engine();
+                false
+            }
+            Route::Pause(next) => {
+                self.pause(next, want.as_deref(), paused);
+                true
+            }
+        }
+    }
+
+    /// Stops the engine because the system output is not the headphones'.
+    fn pause(&mut self, next: Status, want: Option<&str>, was_paused: bool) {
+        self.current_output_name =
+            want.and_then(|u| self.devices.iter().find(|d| d.uid == u)).map_or_else(String::new, |d| d.name.clone());
+        if self.status != next || self.engine.is_some() {
+            crate::log::log(format!("correction paused: {next:?} (system output: {})", self.current_output_name));
+            if !was_paused {
+                self.pause_card_dismissed = false;
+            }
+            self.engine = None;
+            self.status = next;
         }
     }
 
@@ -432,6 +716,9 @@ impl FlatlineApp {
             Status::Blocked => "Blocked by macOS · open Flatline".into(),
             Status::Error => "Engine error · open Flatline".into(),
             Status::Standby => "Standby (system audio untouched)".into(),
+            Status::Asleep => "Paused · Mac asleep".into(),
+            Status::Disconnected => "Paused · headphones disconnected".into(),
+            Status::OutputChanged => format!("Paused · output is {}", self.current_output_name),
         }
     }
 
@@ -444,18 +731,72 @@ impl FlatlineApp {
         for f in dropped {
             let name =
                 f.path().file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Custom".into());
-            match f.bytes().map_err(anyhow::Error::msg).and_then(|b| {
-                let text = String::from_utf8_lossy(&b).into_owned();
-                Curve::parse(&text).map(|c| (c, text))
-            }) {
-                Ok((curve, csv)) => {
-                    self.custom_curve = Some(curve);
-                    self.s.custom = Some(CustomCurve { name: name.clone(), csv });
-                    self.s.headphone = CUSTOM;
-                    self.notify(format!("Loaded measurement “{name}”"));
+            let text = f.bytes().map_err(anyhow::Error::msg).map(|b| String::from_utf8_lossy(&b).into_owned());
+            self.load_measurement(name, text);
+        }
+    }
+
+    /// Uses a frequency-response CSV (dropped or browsed) as the headphones.
+    fn load_measurement(&mut self, name: String, text: anyhow::Result<String>) {
+        match text.and_then(|t| Curve::parse(&t).map(|c| (c, t))) {
+            Ok((curve, csv)) => {
+                self.custom_curve = Some(curve);
+                self.s.custom = Some(CustomCurve { name: name.clone(), csv });
+                self.select_headphones(CUSTOM_KEY);
+                if let Some(o) = &mut self.onb {
+                    o.custom_loaded();
                 }
-                Err(e) => self.notify(format!("Could not read {name}: {e}")),
+                self.notify(format!("Loaded measurement “{name}”"));
             }
+            Err(e) => self.notify(format!("Could not read {name}: {e}")),
+        }
+    }
+
+    /// Demo screenshots of every state (see [`FlatlineApp::forced`]).
+    fn apply_forced(&mut self) {
+        let Some(f) = self.forced.clone() else { return };
+        let paused = |app: &mut Self, st: Status| {
+            app.engine = None;
+            app.status = st;
+        };
+        self.s.headphone_output_name.get_or_insert_with(|| "Scarlett Solo USB".into());
+        match f.as_str() {
+            "bypass" => self.s.enabled = false,
+            "disconnected" => {
+                self.current_output_name = "MacBook Pro Speakers".into();
+                paused(self, Status::Disconnected);
+            }
+            "changed" => {
+                self.current_output_name = "AirPods Pro".into();
+                paused(self, Status::OutputChanged);
+            }
+            "blocked" => paused(self, Status::Blocked),
+            "error" => {
+                self.engine_error = Some("AudioDeviceStart: 'stop' (device is hogged by another process)".into());
+                paused(self, Status::Error);
+            }
+            "asleep" => paused(self, Status::Asleep),
+            "switcher" => self.switcher_open = true,
+            "settings" => self.settings_open = true,
+            _ => {}
+        }
+    }
+
+    /// Output card bars: the post-EQ spectrum in 24 log bands, smoothed.
+    fn update_bars(&mut self, dt: f32) {
+        let n = self.bar_levels.len();
+        let post = &self.analyzer.db[1];
+        let live = self.status == Status::Live && !post.is_empty();
+        for (i, bar) in self.bar_levels.iter_mut().enumerate() {
+            let goal = if live {
+                let (a, b) = (i * post.len() / n, ((i + 1) * post.len() / n).max(i * post.len() / n + 1));
+                let db = post[a..b.min(post.len())].iter().copied().fold(f32::MIN, f32::max);
+                ((db + 84.0) / 64.0).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let k = if goal > *bar { 1.0 - (-dt / 0.03).exp() } else { 1.0 - (-dt / 0.25).exp() };
+            *bar += (goal - *bar) * k;
         }
     }
 
@@ -474,532 +815,6 @@ impl FlatlineApp {
         }
         s
     }
-
-    // ------------------------------------------------------------ views --
-
-    fn top_bar(&mut self, ui: &mut Ui) {
-        let bar = ui.max_rect();
-        let drag =
-            ui.interact(bar.expand2(Vec2::new(100.0, 20.0)), ui.scope_id().with("drag"), Sense::click_and_drag());
-        if drag.drag_started() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-        }
-        ui.horizontal_centered(|ui| {
-            widgets::logo(ui, 30.0);
-            ui.add_space(2.0);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                ui.label(RichText::new("FLATLINE").font(prop(17.0)).color(TEXT).strong());
-                ui.label(RichText::new("headphone calibration · zero-latency EQ").font(prop(11.0)).color(DIM));
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let on = self.s.enabled;
-                let r = widgets::power_button(ui, on, 42.0).on_hover_text("Correction on / bypass  (Space)");
-                if r.clicked() {
-                    self.s.enabled = !self.s.enabled;
-                }
-                ui.allocate_ui_with_layout(Vec2::new(84.0, 40.0), Layout::top_down(Align::Max), |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.label(RichText::new("CORRECTION").font(prop(10.0)).color(FAINT));
-                    let (t, c) = if on { ("ON", ACCENT) } else { ("BYPASS", AMBER) };
-                    ui.label(RichText::new(t).font(mono(15.0)).color(c).strong());
-                });
-                ui.add_space(16.0);
-                let (text, color, pulse) = match self.status {
-                    Status::Live => {
-                        let info = self.engine.as_ref().map(|e| &e.info);
-                        let txt = info.map_or("LIVE".into(), |i| {
-                            format!("LIVE · {} · {:.1} kHz", i.device.name, i.sample_rate / 1000.0)
-                        });
-                        (txt, GREEN, true)
-                    }
-                    Status::Starting => ("STARTING".into(), AMBER, true),
-                    Status::Blocked => ("BLOCKED BY macOS".into(), AMBER, false),
-                    Status::Error => ("ERROR".into(), RED, false),
-                    Status::Standby => ("STANDBY · system audio untouched".into(), DIM, false),
-                };
-                widgets::pill(ui, &text, color, pulse);
-            });
-        });
-        let p = ui.painter();
-        p.line_segment(
-            [Pos2::new(bar.left() - 100.0, bar.bottom() + 11.0), Pos2::new(bar.right() + 30.0, bar.bottom() + 11.0)],
-            Stroke::new(1.0, BORDER),
-        );
-    }
-
-    fn sidebar(&mut self, ui: &mut Ui) {
-        ui.spacing_mut().item_spacing.y = 10.0;
-        ui.add_space(10.0);
-        let w = ui.available_width();
-
-        // Headphone.
-        widgets::card(ui, |ui| {
-            widgets::section_title(ui, "HEADPHONE");
-            let (_, name, note) = self.headphone();
-            let mut sel = self.s.headphone;
-            egui::ComboBox::from_id_salt("hp").width(w - 30.0).selected_text(RichText::new(&name).color(TEXT)).show_ui(
-                ui,
-                |ui| {
-                    for (i, p) in profiles::HEADPHONES.iter().enumerate() {
-                        ui.selectable_value(&mut sel, i, p.name);
-                    }
-                    if let Some(c) = &self.s.custom {
-                        ui.selectable_value(&mut sel, CUSTOM, format!("{} (custom)", c.name));
-                    }
-                },
-            );
-            self.s.headphone = sel;
-            ui.label(RichText::new(note).font(prop(11.0)).color(DIM));
-            ui.label(
-                RichText::new("Drop a .csv (AutoEq / REW) on the window to calibrate any headphone.")
-                    .font(prop(10.5))
-                    .color(FAINT),
-            );
-        });
-
-        // Target.
-        widgets::card(ui, |ui| {
-            widgets::section_title(ui, "TARGET");
-            let mut t = self.s.target;
-            egui::ComboBox::from_id_salt("tg")
-                .width(w - 30.0)
-                .selected_text(RichText::new(profiles::TARGETS[t].name).color(TEXT))
-                .show_ui(ui, |ui| {
-                    for (i, p) in profiles::TARGETS.iter().enumerate() {
-                        ui.selectable_value(&mut t, i, p.name).on_hover_text(p.note);
-                    }
-                });
-            self.s.target = t;
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                for &(label, bass, tilt) in profiles::PRESETS {
-                    let sel =
-                        (self.s.params.bass_db - bass).abs() < 0.05 && (self.s.params.tilt_db_oct - tilt).abs() < 0.005;
-                    if widgets::chip(ui, label, sel).clicked() {
-                        self.s.params.bass_db = bass;
-                        self.s.params.tilt_db_oct = tilt;
-                    }
-                }
-            });
-            widgets::slider(ui, "Bass", &mut self.s.params.bass_db, -6.0..=12.0, 6.5, 0.5, |v| format!("{v:+.1} dB"));
-            widgets::slider(ui, "Tilt", &mut self.s.params.tilt_db_oct, -1.5..=1.5, 0.0, 0.05, |v| {
-                format!("{v:+.2} dB/oct")
-            });
-        });
-
-        // Correction.
-        widgets::card(ui, |ui| {
-            widgets::section_title(ui, "CORRECTION");
-            widgets::slider(ui, "Amount", &mut self.s.amount, 0.0..=1.0, 1.0, 0.01, |v| format!("{:.0} %", v * 100.0));
-            widgets::slider(ui, "Max boost", &mut self.s.params.max_boost_db, 0.0..=12.0, 8.0, 0.5, |v| {
-                format!("{v:.1} dB")
-            });
-            let mut bands = self.s.params.n_filters as f64;
-            if widgets::slider(ui, "Bands", &mut bands, 4.0..=16.0, 10.0, 1.0, |v| format!("{v:.0}")) {
-                self.s.params.n_filters = bands as usize;
-            }
-            widgets::switch(ui, "Loudness-matched bypass", &mut self.s.level_match);
-        });
-
-        // Output.
-        widgets::card(ui, |ui| {
-            widgets::section_title(ui, "OUTPUT");
-            let default_name = self
-                .default_uid
-                .as_ref()
-                .and_then(|u| self.devices.iter().find(|d| &d.uid == u))
-                .map_or("—".to_string(), |d| d.name.clone());
-            let label = match &self.s.output_uid {
-                None => format!("System default · {default_name}"),
-                Some(u) => {
-                    self.devices.iter().find(|d| &d.uid == u).map_or("(disconnected)".into(), |d| d.name.clone())
-                }
-            };
-            let mut sel = self.s.output_uid.clone();
-            egui::ComboBox::from_id_salt("out")
-                .width(w - 30.0)
-                .selected_text(RichText::new(label).color(TEXT))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut sel, None, format!("System default · {default_name}"));
-                    for d in &self.devices {
-                        ui.selectable_value(&mut sel, Some(d.uid.clone()), &d.name);
-                    }
-                });
-            if sel != self.s.output_uid {
-                self.s.output_uid = sel;
-                if self.s.engine_on {
-                    self.start_engine();
-                }
-            }
-            ui.label(RichText::new("Buffer (frames)").font(prop(11.5)).color(DIM));
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 5.0;
-                for b in BUFFER_SIZES {
-                    if widgets::chip(ui, &b.to_string(), self.s.buffer_frames == b).clicked()
-                        && self.s.buffer_frames != b
-                    {
-                        self.s.buffer_frames = b;
-                        if self.s.engine_on {
-                            self.start_engine();
-                        }
-                    }
-                }
-            });
-            let mut on = self.s.engine_on;
-            if widgets::switch(ui, "System-wide processing", &mut on) {
-                self.s.engine_on = on;
-                if on { self.start_engine() } else { self.stop_engine() }
-            }
-            let mut login = self.login_enabled;
-            if widgets::switch(ui, "Launch at login (menu bar)", &mut login) {
-                match crate::login::set_enabled(login) {
-                    Ok(()) => self.login_enabled = crate::login::is_enabled(),
-                    Err(e) => self.notify(format!("{e:#}")),
-                }
-            }
-            if self.tray.is_some() {
-                ui.label(
-                    RichText::new("Closing the window keeps Flatline correcting from the menu bar.")
-                        .font(prop(10.5))
-                        .color(FAINT),
-                );
-            }
-        });
-
-        ui.add_space(4.0);
-        ui.label(RichText::new("Space  A/B bypass   ·   double-click a slider to reset").font(prop(10.5)).color(FAINT));
-        ui.label(RichText::new("Measurements: oratory1990 via AutoEq").font(prop(10.5)).color(FAINT));
-    }
-
-    fn banner(&mut self, ui: &mut Ui) {
-        let (title, body, color) = match self.status {
-            Status::Blocked => (
-                "macOS is blocking system-audio capture",
-                "Allow Flatline in System Settings → Privacy & Security → Screen & System Audio Recording → \
-                 “System Audio Recording Only”, then press Retry. If Flatline is already enabled there, the grant \
-                 belongs to an older build: run `tccutil reset All dev.flatline.app` in Terminal and relaunch. \
-                 Your audio plays normally (uncorrected) meanwhile.",
-                AMBER,
-            ),
-            Status::Error => ("Audio engine error", self.engine_error.as_deref().unwrap_or(""), RED),
-            _ => return,
-        };
-        let body = body.to_owned();
-        Frame::new()
-            .fill(alpha(color, 0.08))
-            .stroke(Stroke::new(1.0, alpha(color, 0.4)))
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(Margin::same(14))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.set_width(ui.available_width() - 230.0);
-                        ui.label(RichText::new(title).color(color).strong());
-                        ui.label(RichText::new(body).font(prop(12.0)).color(DIM));
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("Retry").clicked() {
-                            self.start_engine();
-                        }
-                        if self.status == Status::Blocked && ui.button("Open Settings").clicked() {
-                            let _ = std::process::Command::new("open").arg(SETTINGS_URL).spawn();
-                        }
-                    });
-                });
-            });
-        ui.add_space(12.0);
-    }
-
-    fn tile(ui: &mut Ui, label: &str, value: &str, sub: &str, color: Color32) {
-        Frame::new()
-            .fill(CARD)
-            .stroke(Stroke::new(1.0, BORDER))
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(Margin::symmetric(14, 11))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing.y = 3.0;
-                ui.label(RichText::new(label).font(prop(10.0)).color(FAINT).strong());
-                ui.label(RichText::new(value).font(mono(18.0)).color(color));
-                ui.label(RichText::new(sub).font(prop(10.5)).color(DIM));
-            });
-    }
-
-    fn main_view(&mut self, ui: &mut Ui) {
-        self.banner(ui);
-        let avail = ui.available_size();
-        let stats_h = 84.0;
-        let bottom_h = 158.0;
-        let graph_h = (avail.y - stats_h - bottom_h - 24.0 - 64.0).max(220.0);
-
-        // Graph card.
-        widgets::card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.label(RichText::new("Frequency response").font(prop(15.0)).color(TEXT).strong());
-                    let (_, hp, _) = self.headphone();
-                    ui.label(
-                        RichText::new(format!(
-                            "{hp}  →  {}  ·  bass {:+.1} dB",
-                            profiles::TARGETS[self.s.target].name,
-                            self.s.params.bass_db
-                        ))
-                        .font(prop(11.5))
-                        .color(DIM),
-                    );
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    let l = &mut self.s.layers;
-                    for (name, color, flag) in [
-                        ("Analyzer", alpha(ACCENT, 0.5), &mut l.rta),
-                        ("Result", ACCENT, &mut l.result),
-                        ("Correction", VIOLET, &mut l.eq),
-                        ("Target", TEXT, &mut l.target),
-                        ("Headphone", AMBER, &mut l.measured),
-                    ] {
-                        if legend_chip(ui, name, color, *flag).clicked() {
-                            *flag = !*flag;
-                        }
-                    }
-                });
-            });
-            ui.add_space(6.0);
-            let curves = graph::Curves {
-                grid: self.design.as_ref().map_or(&[][..], |d| &d.grid[..]),
-                measured: &self.disp.measured,
-                target: &self.disp.target,
-                eq: &self.disp.eq,
-                result: &self.disp.result,
-            };
-            let rta = graph::Rta { freqs: &self.analyzer.freqs, pre: &self.analyzer.db[0], post: &self.analyzer.db[1] };
-            let live = self.status == Status::Live;
-            let caption = if live { "RTA: shaded = output, grey = input" } else { "" };
-            graph::draw(
-                ui,
-                Vec2::new(ui.available_width(), graph_h),
-                &curves,
-                live.then_some(&rta),
-                &self.s.layers,
-                caption,
-            );
-        });
-
-        ui.add_space(12.0);
-
-        // Stats.
-        let (before, after) = self.design.as_ref().map_or((0.0, 0.0), |d| (d.error_before_db, d.error_after_db));
-        let info = self.engine.as_ref().map(|e| e.info.clone());
-        let offset = self.shared.io_offset.load() as f64;
-        let io = info.as_ref().map_or("—".into(), |i| {
-            if self.status == Status::Live && offset > 0.0 {
-                format!("{:.1} ms", offset / i.sample_rate * 1000.0)
-            } else {
-                format!("{:.1} ms", i.buffer_frames as f64 / i.sample_rate * 1000.0)
-            }
-        });
-        let io_sub = info.as_ref().map_or("engine off".into(), |i| {
-            format!("{} · buffer {} @ {:.0} kHz", i.tap_mode, i.buffer_frames, i.sample_rate / 1000.0)
-        });
-        ui.columns(5, |cols| {
-            Self::tile(
-                &mut cols[0],
-                "DEVIATION FROM TARGET",
-                &format!("{before:.1} → {after:.1} dB"),
-                "RMS, 20 Hz – 10 kHz",
-                ACCENT,
-            );
-            Self::tile(
-                &mut cols[1],
-                "HEADROOM",
-                &format!("{:+.1} dB", self.preamp_db),
-                "auto preamp, no clipping",
-                VIOLET,
-            );
-            Self::tile(&mut cols[2], "DSP LATENCY", "0 samples", "minimum-phase IIR", GREEN);
-            Self::tile(&mut cols[3], "SYSTEM PATH", &io, &io_sub, TEXT);
-            Self::tile(&mut cols[4], "DSP LOAD", &format!("{:.2} %", self.load * 100.0), "of the audio deadline", TEXT);
-        });
-
-        ui.add_space(12.0);
-
-        // Meters + EQ bands.
-        let w = ui.available_width();
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui(Vec2::new(w * 0.36, bottom_h), |ui| {
-                widgets::card(ui, |ui| {
-                    ui.set_min_height(bottom_h - 28.0);
-                    ui.horizontal(|ui| {
-                        widgets::section_title(ui, "LEVELS");
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let clip = self.clip_until.is_some_and(|t| Instant::now() < t);
-                            let c = if clip { RED } else { BORDER };
-                            ui.label(RichText::new("● CLIP").font(mono(10.5)).color(c));
-                        });
-                    });
-                    ui.spacing_mut().item_spacing.y = 5.0;
-                    for (i, l) in ["IN  L", "IN  R", "OUT L", "OUT R"].iter().enumerate() {
-                        widgets::meter(ui, l, self.meters.level[i], self.meters.hold[i]);
-                    }
-                    let scale = ui.allocate_exact_size(Vec2::new(ui.available_width(), 12.0), Sense::hover()).0;
-                    let bar_l = scale.left() + 46.0;
-                    for db in [-60, -48, -36, -24, -12, -6, 0] {
-                        let x = bar_l + (db as f32 + 60.0) / 60.0 * (scale.right() - bar_l);
-                        ui.painter().text(
-                            Pos2::new(x, scale.top()),
-                            Align2::CENTER_TOP,
-                            db.to_string(),
-                            mono(9.0),
-                            FAINT,
-                        );
-                    }
-                });
-            });
-            ui.allocate_ui(Vec2::new(ui.available_width(), bottom_h), |ui| {
-                widgets::card(ui, |ui| {
-                    ui.set_min_height(bottom_h - 28.0);
-                    ui.horizontal(|ui| {
-                        widgets::section_title(ui, "EQ BANDS");
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .button(RichText::new("Copy EQ").font(prop(12.0)))
-                                .on_hover_text("Equalizer APO / AutoEq ParametricEQ format")
-                                .clicked()
-                            {
-                                ui.ctx().copy_text(self.eq_text());
-                                self.notify("EQ copied to clipboard");
-                            }
-                        });
-                    });
-                    self.band_strip(ui);
-                });
-            });
-        });
-    }
-
-    fn band_strip(&self, ui: &mut Ui) {
-        let Some(d) = &self.design else { return };
-        let bands = d.scaled_filters(self.s.amount);
-        ScrollArea::horizontal().id_salt("bands").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                for f in &bands {
-                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(64.0, 96.0), Sense::hover());
-                    let p = ui.painter();
-                    p.rect_filled(
-                        rect,
-                        CornerRadius::same(8),
-                        if resp.hovered() { CARD_HI } else { Color32::from_rgb(20, 25, 33) },
-                    );
-                    let kind_col = match f.kind {
-                        FilterKind::Peak => DIM,
-                        _ => VIOLET,
-                    };
-                    p.text(
-                        rect.center_top() + Vec2::new(0.0, 6.0),
-                        Align2::CENTER_TOP,
-                        f.kind.short(),
-                        mono(10.0),
-                        kind_col,
-                    );
-                    p.text(
-                        rect.center_top() + Vec2::new(0.0, 20.0),
-                        Align2::CENTER_TOP,
-                        format!("{} Hz", graph::fmt_freq(f.freq)),
-                        mono(11.5),
-                        TEXT,
-                    );
-                    // Gain bar (±12 dB).
-                    let mid = rect.top() + 56.0;
-                    let h = (f.gain_db as f32 / 12.0).clamp(-1.0, 1.0) * 14.0;
-                    let col = if f.gain_db >= 0.0 { AMBER } else { ACCENT };
-                    let bar = Rect::from_min_max(
-                        Pos2::new(rect.center().x - 10.0, mid - h.max(0.0)),
-                        Pos2::new(rect.center().x + 10.0, mid - h.min(0.0)),
-                    );
-                    p.line_segment(
-                        [Pos2::new(rect.left() + 8.0, mid), Pos2::new(rect.right() - 8.0, mid)],
-                        Stroke::new(1.0, BORDER),
-                    );
-                    p.rect_filled(bar, CornerRadius::same(2), alpha(col, 0.8));
-                    p.text(
-                        rect.center_bottom() - Vec2::new(0.0, 19.0),
-                        Align2::CENTER_BOTTOM,
-                        format!("{:+.1}", f.gain_db),
-                        mono(11.0),
-                        col,
-                    );
-                    p.text(
-                        rect.center_bottom() - Vec2::new(0.0, 6.0),
-                        Align2::CENTER_BOTTOM,
-                        format!("Q {:.2}", f.q),
-                        mono(9.5),
-                        FAINT,
-                    );
-                }
-            });
-        });
-    }
-
-    fn overlays(&mut self, ctx: &egui::Context) {
-        let screen = ctx.content_rect();
-        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
-            let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("drop")));
-            p.rect_filled(screen, CornerRadius::ZERO, alpha(BG, 0.85));
-            let r = screen.shrink(40.0);
-            for s in egui::Shape::dashed_line(
-                &[r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()],
-                Stroke::new(2.0, ACCENT),
-                10.0,
-                8.0,
-            ) {
-                p.add(s);
-            }
-            p.text(screen.center(), Align2::CENTER_CENTER, "Drop a frequency-response CSV", prop(22.0), ACCENT);
-        }
-        if let Some((msg, t)) = &self.toast {
-            let age = t.elapsed().as_secs_f32();
-            if age > 2.6 {
-                self.toast = None;
-            } else {
-                let a = (1.0 - ((age - 2.2) / 0.4).clamp(0.0, 1.0)) * (age / 0.15).min(1.0);
-                let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("toast")));
-                let galley = p.layout_no_wrap(msg.clone(), prop(13.0), alpha(TEXT, a));
-                let size = galley.size() + Vec2::new(32.0, 18.0);
-                let r = Rect::from_center_size(Pos2::new(screen.center().x, screen.bottom() - 40.0), size);
-                p.rect_filled(r, CornerRadius::same(10), alpha(CARD_HI, 0.97 * a));
-                p.rect_stroke(
-                    r,
-                    CornerRadius::same(10),
-                    Stroke::new(1.0, alpha(ACCENT, 0.5 * a)),
-                    egui::StrokeKind::Inside,
-                );
-                p.galley(r.center() - galley.size() / 2.0, galley, TEXT);
-                ctx.request_repaint();
-            }
-        }
-    }
-}
-
-fn legend_chip(ui: &mut Ui, name: &str, color: Color32, on: bool) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(name.to_owned(), prop(11.5), TEXT);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 26.0, 22.0), Sense::click());
-    let p = ui.painter();
-    if resp.hovered() {
-        p.rect_filled(rect, CornerRadius::same(11), CARD_HI);
-    }
-    p.circle_filled(Pos2::new(rect.left() + 10.0, rect.center().y), 4.0, if on { color } else { alpha(color, 0.2) });
-    p.text(
-        Pos2::new(rect.left() + 19.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        name,
-        prop(11.5),
-        if on { TEXT } else { FAINT },
-    );
-    resp
 }
 
 impl eframe::App for FlatlineApp {
@@ -1011,8 +826,7 @@ impl eframe::App for FlatlineApp {
         // Correction design (worker thread).
         let key = self.design_key();
         if self.requested.as_ref() != Some(&key) {
-            let (hp, _, _) = self.headphone();
-            let tg = profiles::TARGETS[self.s.target].curve();
+            let (hp, tg) = self.headphone_curves();
             let _ = self.designer.tx.send(Job { key: key.clone(), hp, tg });
             self.requested = Some(key);
         }
@@ -1050,15 +864,41 @@ impl eframe::App for FlatlineApp {
                 self.devices = engine::list_output_devices();
             }
             self.default_uid = engine::default_output_uid();
-            if let Some(e) = &self.engine {
+            let routed_away = self.forced.is_none() && self.route();
+            if self.power.take_woke() {
+                crate::log::log("system woke up: restarting the engine");
+                self.blocked_retries = 0;
+                if self.s.engine_on && !routed_away {
+                    self.start_engine();
+                }
+            }
+            if self.power.is_sleeping() {
+                if self.engine.is_some() && self.status != Status::Asleep {
+                    crate::log::log("system going to sleep: engine paused");
+                    self.status = Status::Asleep;
+                }
+            } else if let Some(e) = &self.engine {
                 let cb = self.shared.callbacks.load(Relaxed);
+                let before = self.status;
                 if cb != self.cb_seen.0 {
                     self.cb_seen = (cb, now);
                     self.status = Status::Live;
-                } else if now - self.cb_seen.1 > Duration::from_millis(1500) {
+                    self.blocked_retries = 0;
+                } else if self.status == Status::Live && now - self.cb_seen.1 > Duration::from_millis(1500) {
+                    // Was running, then stopped (device gone, coreaudiod restart…).
+                    self.status = Status::Blocked;
+                } else if self.status != Status::Live && now - self.last_restart > START_GRACE {
                     self.status = Status::Blocked;
                 }
-                let retry_blocked = self.status == Status::Blocked && now - self.last_restart > Duration::from_secs(3);
+                if self.status != before {
+                    let since_start = (now - self.last_restart).as_millis();
+                    crate::log::log(format!(
+                        "status {before:?} → {:?} ({}, {since_start} ms after start)",
+                        self.status, e.info.tap_mode
+                    ));
+                }
+                let retry_blocked = self.status == Status::Blocked
+                    && now - self.last_restart > START_GRACE + retry_delay(self.blocked_retries);
                 let want = self
                     .s
                     .output_uid
@@ -1067,10 +907,21 @@ impl eframe::App for FlatlineApp {
                     .or(self.default_uid.clone());
                 let moved = want.as_deref().is_some_and(|w| w != e.info.device.uid);
                 let rate_changed = e.current_sample_rate().is_some_and(|r| (r - e.info.sample_rate).abs() > 1.0);
+                let alive = e.device_alive();
                 if retry_blocked
-                    || ((moved || rate_changed || !e.device_alive())
-                        && now - self.last_restart > Duration::from_millis(1500))
+                    || ((moved || rate_changed || !alive) && now - self.last_restart > Duration::from_millis(1500))
                 {
+                    let why = if retry_blocked {
+                        self.blocked_retries += 1;
+                        format!("still blocked (retry {})", self.blocked_retries)
+                    } else if moved {
+                        format!("output moved to {}", want.as_deref().unwrap_or("?"))
+                    } else if rate_changed {
+                        "sample rate changed".to_owned()
+                    } else {
+                        "device disconnected".to_owned()
+                    };
+                    crate::log::log(format!("restarting engine: {why}"));
                     self.start_engine();
                 }
             }
@@ -1114,20 +965,45 @@ impl eframe::App for FlatlineApp {
             self.analyzer.decay()
         }
         let sh = &self.shared;
-        self.meters
-            .update([sh.peak_in[0].take(), sh.peak_in[1].take(), sh.peak_out[0].take(), sh.peak_out[1].take()], dt);
+        let peaks = [sh.peak_in[0].take(), sh.peak_in[1].take(), sh.peak_out[0].take(), sh.peak_out[1].take()];
+        if !self.signal_seen && self.engine.is_some() && peaks[0].max(peaks[1]) > 1e-4 {
+            self.signal_seen = true;
+            crate::log::log(format!(
+                "first audio from the tap {} ms after start",
+                (now - self.last_restart).as_millis()
+            ));
+        }
+        self.meters.update(peaks, dt);
+        let out_peak = peaks[2].max(peaks[3]);
         let load = sh.load.take();
         self.load = if load > self.load { load } else { self.load + (load - self.load) * 0.05 };
         let clips = sh.clips.load(Relaxed);
         if clips != self.clips_seen {
             self.clips_seen = clips;
             self.clip_until = Some(now + Duration::from_millis(1500));
+            if self.last_clip_toast.is_none_or(|t| now - t > Duration::from_secs(30)) {
+                self.last_clip_toast = Some(now);
+                self.notify("Output is clipping · lower Bass or Max boost");
+            }
         }
+
+        let mood = if self.in_setup() { super::aura::Mood::Live } else { self.mood() };
+        self.aura.update(mood, out_peak, dt);
+        if self.aura.settling(mood) {
+            ctx.request_repaint();
+        }
+        self.update_bars(dt);
 
         if ctx.input(|i| i.key_pressed(Key::Space)) && !ctx.egui_wants_keyboard_input() {
             self.s.enabled = !self.s.enabled;
         }
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.switcher_open = false;
+            self.settings_open = false;
+        }
         self.handle_drops(ctx);
+
+        self.apply_forced();
 
         let report = format!(
             "status={:?} hidden={} tray={} login={} io_offset={} fs={} buffer={} load={:.3}\n",
@@ -1161,32 +1037,23 @@ impl eframe::App for FlatlineApp {
             ctx.request_repaint();
         }
 
-        ctx.request_repaint_after(if self.engine.is_some() && !self.hidden {
+        ctx.request_repaint_after(if self.hidden {
+            Duration::from_millis(250)
+        } else if self.status == Status::Live {
             Duration::from_millis(16)
         } else {
-            Duration::from_millis(250)
+            Duration::from_millis(33) // the light keeps drifting
         });
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        egui::Panel::top("top")
-            .exact_size(66.0)
-            .show_separator_line(false)
-            .frame(Frame::new().fill(PANEL).inner_margin(Margin { left: 86, right: 18, top: 12, bottom: 10 }))
-            .show(ui, |ui| self.top_bar(ui));
-        egui::Panel::left("side")
-            .exact_size(316.0)
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(Frame::new().fill(PANEL).inner_margin(Margin { left: 14, right: 10, top: 0, bottom: 10 }))
-            .show(ui, |ui| {
-                ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| self.sidebar(ui));
-            });
-        egui::CentralPanel::default()
-            .frame(Frame::new().fill(BG).inner_margin(Margin::same(16)))
-            .show(ui, |ui| self.main_view(ui));
-        self.overlays(&ctx);
+        egui::CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
+            if self.onb.is_some() {
+                self.onboarding_view(ui);
+            } else {
+                self.view(ui);
+            }
+        });
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -1196,6 +1063,85 @@ impl eframe::App for FlatlineApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        crate::log::log("quit");
         self.engine = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v3_settings_move_to_the_catalog() {
+        for (legacy, key) in
+            [(Some(0), LEGACY_KEYS[0]), (Some(1), LEGACY_KEYS[1]), (Some(3), LEGACY_KEYS[3]), (None, DEFAULT_KEY)]
+        {
+            let mut s = Settings {
+                legacy_headphone: legacy,
+                version: 3,
+                params: DesignParams { bass_db: 6.5, ..DesignParams::default() },
+                ..Settings::default()
+            };
+            migrate(&mut s);
+            assert_eq!(s.headphone_key, key);
+            assert!(Catalog::get().find(&s.headphone_key).is_some(), "{key} is in the catalog");
+            assert!(s.onboarded, "upgrades skip the first-run setup");
+            assert_eq!(s.params.bass_db, 6.0);
+            assert_eq!(s.version, SETTINGS_VERSION);
+        }
+        let mut custom = Settings { legacy_headphone: Some(usize::MAX), version: 3, ..Settings::default() };
+        migrate(&mut custom);
+        assert_eq!(custom.headphone_key, CUSTOM_KEY);
+    }
+
+    #[test]
+    fn correction_follows_the_headphones() {
+        let (hp, spk, air) = ("Scarlett", "BuiltInSpeakerDevice", "AirPods");
+        // Not learned yet: correct whatever plays.
+        assert_eq!(route_decision(None, Some(spk), false, false), Route::Run);
+        // On the headphones' output.
+        assert_eq!(route_decision(Some(hp), Some(hp), true, false), Route::Run);
+        // Unplugged: macOS falls back to the speakers.
+        assert_eq!(route_decision(Some(hp), Some(spk), false, false), Route::Pause(Status::Disconnected));
+        // Still plugged, but the system switched to AirPods.
+        assert_eq!(route_decision(Some(hp), Some(air), true, false), Route::Pause(Status::OutputChanged));
+        // Plugged back in and selected again.
+        assert_eq!(route_decision(Some(hp), Some(hp), true, true), Route::Resume);
+        // "Forget" while paused.
+        assert_eq!(route_decision(None, Some(spk), false, true), Route::Resume);
+    }
+
+    /// A real settings file written by v3 (the bug: it failed to load).
+    #[test]
+    fn real_v3_file_loads_and_keeps_its_values() {
+        let v3 = "(headphone:2,target:0,params:(bass_db:0.0,tilt_db_oct:0.0,max_boost_db:8.0,n_filters:10),\
+                  amount:1.0,enabled:false,level_match:true,output_uid:None,buffer_frames:256,engine_on:true,\
+                  custom:None,layers:(measured:true,target:true,eq:true,result:false,rta:false),version:3)";
+        let mut s: Settings = ron::from_str(v3).expect("v3 settings parse");
+        migrate(&mut s);
+        assert_eq!(s.headphone_key, LEGACY_KEYS[2]);
+        assert!(s.onboarded);
+        assert_eq!((s.params.bass_db, s.enabled, s.buffer_frames), (0.0, false, 256));
+        // Round trip: the legacy field is never written back.
+        let saved = ron::to_string(&s).expect("serialize");
+        assert!(!saved.contains("headphone:"), "{saved}");
+        let back: Settings = ron::from_str(&saved).expect("v4 settings parse");
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn fresh_settings_need_setup() {
+        let mut s = Settings::default();
+        migrate(&mut s);
+        assert!(!s.onboarded);
+        assert_eq!(s.headphone_key, DEFAULT_KEY);
+    }
+
+    #[test]
+    fn presets_follow_the_target_bass() {
+        let over = onboarding::presets(6.0);
+        assert_eq!([over[0].bass, over[1].bass, over[2].bass, over[3].bass], [0.0, 3.0, 6.0, 7.5]);
+        assert_eq!(onboarding::presets(8.0)[2].bass, 8.0);
     }
 }

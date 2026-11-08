@@ -1,7 +1,10 @@
-//! Frequency-response plot with live RTA underlay.
+//! Frequency-response chart, Horizon style: minimal grid, the corrected
+//! curve glowing over a pulse-red gradient, the raw headphone curve in coral
+//! and the target dotted. `bypass` (0 → 1) crossfades toward the raw curve.
 
 use super::theme::*;
-use eframe::egui::{self, Align2, Color32, CornerRadius, Mesh, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
+use super::widgets::lerp_color;
+use eframe::egui::{self, Align2, Color32, CornerRadius, Mesh, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2};
 use serde::{Deserialize, Serialize};
 
 /// Curves to draw, all sampled on `grid`.
@@ -28,8 +31,8 @@ pub struct Rta<'a> {
     pub post: &'a [f32],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 /// Which layers of the graph are visible.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Layers {
     /// Headphone response.
     pub measured: bool,
@@ -45,7 +48,7 @@ pub struct Layers {
 
 impl Default for Layers {
     fn default() -> Self {
-        Self { measured: true, target: true, eq: true, result: true, rta: true }
+        Self { measured: true, target: true, eq: false, result: true, rta: true }
     }
 }
 
@@ -82,137 +85,122 @@ fn area(painter: &egui::Painter, pts: &[Pos2], base_y: f32, top: Color32, bottom
     painter.add(Shape::mesh(m));
 }
 
-fn glow_line(painter: &egui::Painter, pts: Vec<Pos2>, color: Color32, width: f32) {
-    painter.line(pts.clone(), Stroke::new(width * 4.0, alpha(color, 0.07)));
-    painter.line(pts.clone(), Stroke::new(width * 2.2, alpha(color, 0.18)));
-    painter.line(pts, Stroke::new(width, color));
+/// Polyline whose colour runs sun → milk → coral from left to right.
+fn gradient_line(painter: &egui::Painter, pts: &[Pos2], width: f32, opacity: f32) {
+    let n = pts.len().max(2) as f32;
+    for (i, w) in pts.windows(2).enumerate() {
+        let t = i as f32 / n;
+        let col = if t < 0.5 { lerp_color(SOLEIL, MILK, t * 2.0) } else { lerp_color(MILK, HALO, (t - 0.5) * 2.0) };
+        painter.line_segment([w[0], w[1]], Stroke::new(width, alpha(col, opacity)));
+    }
 }
 
-/// Draws the frequency-response plot, with hover readout, in a `size` box.
-pub fn draw(ui: &mut Ui, size: Vec2, c: &Curves, rta: Option<&Rta>, layers: &Layers, caption: &str) {
+/// Draws the chart in a `size` box, with a hover readout.
+pub fn draw(ui: &mut Ui, size: Vec2, c: &Curves, rta: Option<&Rta>, layers: &Layers, bypass: f32) {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
-    let plot = Rect::from_min_max(rect.min + Vec2::new(34.0, 4.0), rect.max - Vec2::new(4.0, 22.0));
+    let plot = Rect::from_min_max(rect.min, rect.max - Vec2::new(0.0, 24.0));
     let painter = ui.painter_at(rect);
     let span = (1000f64).log2();
     let fx = |f: f64| plot.left() + ((f / 20.0).log2() / span) as f32 * plot.width();
     let fy = |db: f32| plot.top() + (DB_TOP - db.clamp(DB_BOT - 3.0, DB_TOP + 3.0)) / (DB_TOP - DB_BOT) * plot.height();
     let ry = |db: f32| plot.top() + (RTA_TOP - db).clamp(0.0, RTA_TOP - RTA_BOT) / (RTA_TOP - RTA_BOT) * plot.height();
 
-    painter.rect_filled(plot, CornerRadius::same(6), Color32::from_rgb(10, 13, 18));
-
-    // Grid.
-    let majors = [20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0, 20_000.0];
-    for decade in [10.0, 100.0, 1000.0, 10_000.0] {
-        for m in 1..10 {
-            let f = decade * m as f64;
-            if !(20.0..=20_000.0).contains(&f) {
-                continue;
-            }
-            let x = fx(f);
-            let major = majors.contains(&f);
-            painter.line_segment(
-                [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
-                Stroke::new(1.0, if major { GRID } else { alpha(GRID, 0.45) }),
-            );
-            if major {
-                painter.text(Pos2::new(x, plot.bottom() + 5.0), Align2::CENTER_TOP, fmt_freq(f), mono(10.5), FAINT);
-            }
-        }
-    }
-    for db in (-20..=20).step_by(5) {
-        let y = fy(db as f32);
+    for f in [100.0, 1000.0, 10_000.0] {
+        let x = fx(f);
         painter.line_segment(
-            [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
-            Stroke::new(1.0, if db == 0 { BORDER } else { GRID }),
-        );
-        painter.text(
-            Pos2::new(plot.left() - 6.0, y),
-            Align2::RIGHT_CENTER,
-            format!("{db:+}").replace("+0", "0"),
-            mono(10.5),
-            FAINT,
+            [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
+            Stroke::new(1.0, alpha(Color32::WHITE, 0.06)),
         );
     }
-    painter.text(plot.left_top() + Vec2::new(10.0, 8.0), Align2::LEFT_TOP, caption, prop(11.5), FAINT);
+    painter.line_segment(
+        [Pos2::new(plot.left(), fy(0.0)), Pos2::new(plot.right(), fy(0.0))],
+        Stroke::new(1.0, alpha(Color32::WHITE, 0.2)),
+    );
+    for (f, label) in [(20.0, "20 Hz"), (100.0, "100"), (1000.0, "1k"), (10_000.0, "10k"), (20_000.0, "20k")] {
+        let align = match label {
+            "20 Hz" => Align2::LEFT_TOP,
+            "20k" => Align2::RIGHT_TOP,
+            _ => Align2::CENTER_TOP,
+        };
+        painter.text(Pos2::new(fx(f), plot.bottom() + 6.0), align, label, body(12.5), MIST);
+    }
 
-    let clip = painter.with_clip_rect(plot);
-    let pts = |v: &[f32]| -> Vec<Pos2> { c.grid.iter().zip(v).map(|(&f, &d)| Pos2::new(fx(f), fy(d))).collect() };
-
-    // Live analyzer underlay.
+    let clip = painter.with_clip_rect(plot.expand(4.0));
     if let (true, Some(r)) = (layers.rta, rta) {
         let post: Vec<Pos2> = r.freqs.iter().zip(r.post).map(|(&f, &d)| Pos2::new(fx(f), ry(d))).collect();
-        let pre: Vec<Pos2> = r.freqs.iter().zip(r.pre).map(|(&f, &d)| Pos2::new(fx(f), ry(d))).collect();
-        area(&clip, &post, plot.bottom(), alpha(ACCENT, 0.16), alpha(ACCENT, 0.0));
-        clip.line(post, Stroke::new(1.0, alpha(ACCENT, 0.35)));
-        clip.line(pre, Stroke::new(1.0, alpha(DIM, 0.30)));
+        area(&clip, &post, plot.bottom(), alpha(Color32::WHITE, 0.045), alpha(Color32::WHITE, 0.0));
     }
-
     if c.measured.is_empty() {
-        painter.text(plot.center(), Align2::CENTER_CENTER, "computing…", prop(14.0), DIM);
+        painter.text(plot.center(), Align2::CENTER_CENTER, "computing…", body(15.0), MIST);
         return;
     }
+    let pts = |v: &[f32]| -> Vec<Pos2> { c.grid.iter().zip(v).map(|(&f, &d)| Pos2::new(fx(f), fy(d))).collect() };
+    let on = 1.0 - bypass;
 
-    if layers.eq {
-        let p = pts(c.eq);
-        area(&clip, &p, fy(0.0), alpha(VIOLET, 0.22), alpha(VIOLET, 0.02));
-        clip.line(p, Stroke::new(1.6, alpha(VIOLET, 0.9)));
-    }
-    if layers.measured {
-        clip.line(pts(c.measured), Stroke::new(1.6, alpha(AMBER, 0.85)));
-    }
     if layers.target {
-        for s in Shape::dashed_line(&pts(c.target), Stroke::new(1.4, alpha(TEXT, 0.55)), 6.0, 4.0) {
+        for s in Shape::dashed_line(&pts(c.target), Stroke::new(1.6, alpha(Color32::WHITE, 0.55)), 1.5, 5.0) {
             clip.add(s);
         }
     }
-    if layers.result {
-        glow_line(&clip, pts(c.result), ACCENT, 2.2);
+    if layers.eq {
+        clip.line(pts(c.eq), Stroke::new(1.4, alpha(MIST2, 0.6)));
+    }
+    if layers.measured {
+        clip.line(pts(c.measured), Stroke::new(1.4 + 1.2 * bypass, alpha(HALO, 0.5 + 0.5 * bypass)));
+    }
+    if layers.result && on > 0.02 {
+        let r = pts(c.result);
+        area(&clip, &r, plot.bottom(), alpha(PULSE, 0.50 * on), alpha(PULSE, 0.0));
+        clip.line(r.clone(), Stroke::new(10.0, alpha(PULSE, 0.35 * on)));
+        gradient_line(&clip, &r, 2.8, on);
     }
 
-    // Hover readout.
     if let Some(pos) = resp.hover_pos().filter(|p| plot.contains(*p)) {
         let f = 20.0 * 2f64.powf(((pos.x - plot.left()) / plot.width()) as f64 * span);
         let i = c.grid.partition_point(|&g| g < f).min(c.grid.len() - 1);
         let x = fx(c.grid[i]);
-        clip.line_segment([Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())], Stroke::new(1.0, alpha(TEXT, 0.25)));
+        clip.line_segment(
+            [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
+            Stroke::new(1.0, alpha(Color32::WHITE, 0.25)),
+        );
         let mut rows: Vec<(&str, Color32, f32)> = Vec::new();
         if layers.target {
-            rows.push(("Target", TEXT, c.target[i]));
+            rows.push(("Target", MILK, c.target[i]));
         }
         if layers.measured {
-            rows.push(("Headphone", AMBER, c.measured[i]));
+            rows.push(("Your headphones", HALO, c.measured[i]));
         }
         if layers.eq {
-            rows.push(("Correction", VIOLET, c.eq[i]));
+            rows.push(("Correction", MIST2, c.eq[i]));
         }
         if layers.result {
-            rows.push(("Result", ACCENT, c.result[i]));
+            rows.push(("Result", SOLEIL, c.result[i]));
         }
         for (_, col, v) in &rows {
-            clip.circle_filled(Pos2::new(x, fy(*v)), 3.5, *col);
+            clip.circle_filled(Pos2::new(x, fy(*v)), 4.0, *col);
         }
-        let w = 168.0;
-        let h = 26.0 + rows.len() as f32 * 17.0;
-        let mut bx = pos.x + 14.0;
+        let w = 200.0;
+        let h = 34.0 + rows.len() as f32 * 20.0;
+        let mut bx = pos.x + 16.0;
         if bx + w > plot.right() {
-            bx = pos.x - 14.0 - w;
+            bx = pos.x - 16.0 - w;
         }
         let by = (pos.y - h / 2.0).clamp(plot.top() + 4.0, plot.bottom() - h - 4.0);
         let r = Rect::from_min_size(Pos2::new(bx, by), Vec2::new(w, h));
-        painter.rect_filled(r, CornerRadius::same(8), alpha(CARD_HI, 0.96));
-        painter.rect_stroke(r, CornerRadius::same(8), Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+        painter.rect_filled(r, CornerRadius::same(14), Color32::from_rgba_unmultiplied(28, 24, 30, 240));
+        painter.rect_stroke(r, CornerRadius::same(14), Stroke::new(1.0, glass_edge()), StrokeKind::Inside);
         painter.text(
-            r.left_top() + Vec2::new(10.0, 7.0),
+            r.left_top() + Vec2::new(14.0, 10.0),
             Align2::LEFT_TOP,
             format!("{} Hz", fmt_freq(c.grid[i])),
-            mono(12.0),
-            TEXT,
+            medium(14.0),
+            MILK,
         );
         for (k, (name, col, v)) in rows.iter().enumerate() {
-            let y = r.top() + 27.0 + k as f32 * 17.0;
-            painter.circle_filled(Pos2::new(r.left() + 13.0, y + 6.0), 3.0, *col);
-            painter.text(Pos2::new(r.left() + 22.0, y), Align2::LEFT_TOP, *name, prop(11.5), DIM);
-            painter.text(Pos2::new(r.right() - 10.0, y), Align2::RIGHT_TOP, format!("{v:+.1} dB"), mono(11.5), *col);
+            let y = r.top() + 34.0 + k as f32 * 20.0;
+            painter.circle_filled(Pos2::new(r.left() + 18.0, y + 7.0), 3.5, *col);
+            painter.text(Pos2::new(r.left() + 28.0, y), Align2::LEFT_TOP, *name, body(13.0), MIST);
+            painter.text(Pos2::new(r.right() - 14.0, y), Align2::RIGHT_TOP, format!("{v:+.1} dB"), medium(13.0), *col);
         }
     }
 }

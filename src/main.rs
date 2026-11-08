@@ -118,7 +118,7 @@ fn headless(secs: f64) -> anyhow::Result<()> {
     let hp = profiles::HEADPHONES[0].curve();
     let tg = profiles::TARGETS[0].curve();
     let bf: u32 = std::env::var("FL_BUF").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
-    let mut eng = engine::Engine::start(None, bf, shared.clone(), |fs| {
+    let mut eng = engine::Engine::start(None, bf, true, shared.clone(), |fs| {
         let d = dsp::fit::design(&hp, &tg, &Default::default(), fs);
         let pre = -dsp::fit::max_gain_db(&d.filters, fs).max(0.0);
         dsp::processor::EqSettings::from_filters(&d.filters, pre, pre, fs)
