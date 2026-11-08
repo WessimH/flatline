@@ -147,3 +147,21 @@ Journal de l'appli : `~/Library/Logs/Flatline/flatline.log`.
 ## Règles de git
 
 Aucun agent ne commite, ne pousse ou ne publie sans l'accord explicite de Wessim.
+
+### Relier le code aux tickets
+
+Linear est relié au dépôt GitHub. Il rattache tout seul une branche, un commit ou une pull request à un ticket quand son identifiant (`FLA-12`) y apparaît.
+
+- **Une branche par ticket**, créée depuis `main`. Son nom est celui que Linear propose (champ « branch name » du ticket, par exemple `wessim/fla-12-pause-on-unplug`). Sinon : `fla-12-description-courte`.
+- **Chaque commit cite le ticket** au début du message : `FLA-12: pause correction when headphones are unplugged`.
+- **La pull request** a le ticket dans son titre (`FLA-12: …`) et `Closes FLA-12` dans sa description. Linear passe alors le ticket en « In Review » à l'ouverture et en « Done » à la fusion.
+- Un changement sans ticket (petite correction) peut aller sur `main` directement, avec l'accord de Wessim.
+
+Exemple complet :
+
+```bash
+git switch -c wessim/fla-12-pause-on-unplug main
+git commit -m "FLA-12: pause correction when headphones are unplugged"
+git push -u origin wessim/fla-12-pause-on-unplug
+gh pr create --title "FLA-12: Pause correction on unplug" --body "Closes FLA-12"
+```

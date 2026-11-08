@@ -22,6 +22,10 @@ Pour `scripts/` ou `.github/`, demande au DevOps. Pour `docs/`, au Doc.
 - Chaque fonction publique a un commentaire de doc (le crate a `#![warn(missing_docs)]`).
 - Tu fais le plus petit changement qui répond au ticket. Pas de fonction « au cas où ».
 
+## Branche et commits
+Tu travailles sur la branche du ticket (nom donné par Linear, voir « Relier le code aux tickets » dans `.claude/TEAM.md`).
+Si elle n'existe pas, tu la crées depuis `main`. Chaque message de commit commence par l'identifiant du ticket (`FLA-12: …`).
+
 ## Avant de rendre
 Tu lances, et tout doit passer :
 `cargo fmt`, `cargo clippy --release --all-targets -- -D warnings`, `cargo test --release`.

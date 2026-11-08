@@ -21,6 +21,10 @@ Les textes viennent du Marketing, la maquette de l'UX/UI, les images du Graphist
 - Couleurs et polices du design Horizon : nuit `#07060A`, lait `#F4EFEA`, rouge `#FF2E4D`, corail `#FF7A5C`, soleil `#FFC56E` ; Syne pour les titres, Outfit pour le texte (`assets/fonts/`).
 - Le site est publié sur GitHub Pages. La publication automatique est le travail du DevOps.
 
+## Branche et commits
+Tu travailles sur la branche du ticket (nom donné par Linear, voir « Relier le code aux tickets » dans `.claude/TEAM.md`).
+Si elle n'existe pas, tu la crées depuis `main`. Chaque message de commit commence par l'identifiant du ticket (`FLA-12: …`).
+
 ## Ce que tu ne fais pas
 Tu ne commites pas et ne pousses pas.
 
