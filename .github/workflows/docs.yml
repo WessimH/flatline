@@ -1,4 +1,5 @@
-name: Docs
+# Builds the rustdoc (API + code guide) and publishes it on GitHub Pages.
+name: docs
 
 on:
   push:
@@ -16,17 +17,14 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-latest # CoreAudio / AppKit crates only build on macOS
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build rustdoc
-        run: cargo doc --no-deps
+      - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
-      - name: Redirect site root to the crate docs
-        run: echo '<meta http-equiv="refresh" content="0; url=flatline/index.html">' > target/doc/index.html
+      - run: echo '<meta http-equiv="refresh" content="0; url=flatline/index.html">' > target/doc/index.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: target/doc

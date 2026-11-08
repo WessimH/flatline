@@ -52,3 +52,8 @@ pub mod log;
 pub mod login;
 pub mod profiles;
 pub mod ui;
+
+/// Guide du code : quel fichier fait quoi, où modifier chaque écran,
+/// comment tester (source : `docs/ARCHITECTURE.md`).
+#[doc = include_str!("../docs/ARCHITECTURE.md")]
+pub mod guide {}

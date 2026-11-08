@@ -24,6 +24,8 @@
 
 ---
 
+**Documentation:** [wessimh.github.io/flatline](https://wessimh.github.io/flatline/) (API reference and [code guide](https://wessimh.github.io/flatline/flatline/guide/index.html), rebuilt on every push to `main`).
+
 ## Why
 
 Headphone calibration tools like Sonarworks SoundID Reference correct a headphone's frequency response toward a neutral target. Flatline does the same thing, open source and native:
