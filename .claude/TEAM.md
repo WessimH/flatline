@@ -177,7 +177,7 @@ cargo clippy --release --all-targets -- -D warnings
 open -W -n --env FL_DEMO=1 --env FL_STATE=live --env FL_SHOT=/tmp/shot.png dist/Flatline.app
 ```
 
-`FL_STATE` accepte : `live`, `bypass`, `disconnected`, `changed`, `blocked`, `error`, `asleep`, `switcher`, `settings`, `access`, `pick`, `sound`.
+`FL_STATE` accepte : `live`, `bypass`, `speakers`, `new-output`, `switched`, `blocked`, `error`, `asleep`, `switcher`, `settings`, `access`, `pick`, `sound`.
 Sans `FL_STATE`, `FL_DEMO=1` ouvre l'écran de bienvenue. Une seule instance de Flatline peut tourner : la quitter avant.
 Journal de l'appli : `~/Library/Logs/Flatline/flatline.log`.
 

@@ -177,27 +177,6 @@ pub struct Device {
     pub uid: String,
     /// Human-readable name.
     pub name: String,
-    /// A wired output headphones can be plugged into (USB, Thunderbolt, PCI,
-    /// FireWire or the built-in headphone jack). False for the built-in
-    /// speakers, Bluetooth, HDMI, AirPlay and virtual devices.
-    pub wired: bool,
-}
-
-/// Whether a device with this CoreAudio transport type and UID is a wired
-/// headphone output. The built-in speakers and the built-in headphone jack
-/// share the "built-in" transport; only their UIDs tell them apart.
-fn is_wired(transport: u32, uid: &str) -> bool {
-    const WIRED: [u32; 4] = [
-        kAudioDeviceTransportTypeUSB,
-        kAudioDeviceTransportTypeThunderbolt,
-        kAudioDeviceTransportTypePCI,
-        kAudioDeviceTransportTypeFireWire,
-    ];
-    if transport == kAudioDeviceTransportTypeBuiltIn {
-        !uid.contains("BuiltInSpeaker")
-    } else {
-        WIRED.contains(&transport)
-    }
 }
 
 /// Lists every device that has output channels (Flatline's own private
@@ -214,9 +193,7 @@ pub fn list_output_devices() -> Vec<Device> {
                 return None;
             }
             let name = get_string(id, kAudioObjectPropertyName, GLOBAL).unwrap_or_else(|_| uid.clone());
-            let transport = get::<u32>(id, kAudioDevicePropertyTransportType, GLOBAL).unwrap_or(0);
-            let wired = is_wired(transport, &uid);
-            Some(Device { id, uid, name, wired })
+            Some(Device { id, uid, name })
         })
         .collect()
 }
@@ -755,21 +732,5 @@ impl IoState {
             self.shared.clips.fetch_add(clips, Relaxed);
         }
         frames
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_wired_headphone_outputs_count() {
-        let builtin = kAudioDeviceTransportTypeBuiltIn;
-        assert!(is_wired(builtin, "BuiltInHeadphoneOutputDevice"));
-        assert!(!is_wired(builtin, "BuiltInSpeakerDevice"));
-        assert!(is_wired(kAudioDeviceTransportTypeUSB, "AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1"));
-        assert!(!is_wired(kAudioDeviceTransportTypeBluetooth, "AC-90-85-00-00-00:output"));
-        assert!(!is_wired(kAudioDeviceTransportTypeHDMI, "HDMI"));
-        assert!(!is_wired(kAudioDeviceTransportTypeUnknown, "Unknown"));
     }
 }

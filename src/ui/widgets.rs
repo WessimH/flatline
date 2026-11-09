@@ -105,8 +105,8 @@ pub enum Icon {
     Plus,
     /// Copy.
     Copy,
-    /// Unplugged cable.
-    Unplug,
+    /// Loudspeaker (the Mac's built-in speakers).
+    Speaker,
     /// Padlock.
     Lock,
     /// Warning triangle.
@@ -171,23 +171,27 @@ pub fn draw_icon(p: &Painter, icon: Icon, c: Pos2, s: f32, color: Color32) {
             );
             p.line(vec![at(-0.12, -0.28), at(0.26, -0.28), at(0.26, 0.10)], st);
         }
-        Icon::Unplug => {
-            p.rect_stroke(
-                Rect::from_min_max(at(-0.42, -0.14), at(-0.12, 0.14)),
-                CornerRadius::same(2),
+        Icon::Speaker => {
+            p.line(
+                vec![
+                    at(-0.34, -0.10),
+                    at(-0.18, -0.10),
+                    at(0.0, -0.28),
+                    at(0.0, 0.28),
+                    at(-0.18, 0.10),
+                    at(-0.34, 0.10),
+                    at(-0.34, -0.10),
+                ],
                 st,
-                StrokeKind::Middle,
             );
-            p.line_segment([at(-0.12, -0.07), at(-0.02, -0.07)], st);
-            p.line_segment([at(-0.12, 0.07), at(-0.02, 0.07)], st);
-            p.rect_stroke(
-                Rect::from_min_max(at(0.12, -0.14), at(0.42, 0.14)),
-                CornerRadius::same(2),
-                st,
-                StrokeKind::Middle,
-            );
-            for y in [-0.30, 0.30] {
-                p.line_segment([at(0.0, y * 0.9), at(0.04, y * 0.6)], st);
+            for r in [0.16, 0.30] {
+                let arc: Vec<Pos2> = (0..=12)
+                    .map(|i| {
+                        let a = -0.3 * PI + i as f32 / 12.0 * 0.6 * PI;
+                        at(0.06 + r * a.cos(), r * a.sin())
+                    })
+                    .collect();
+                p.line(arc, st);
             }
         }
         Icon::Lock => {

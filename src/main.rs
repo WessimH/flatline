@@ -21,8 +21,7 @@ fn main() -> anyhow::Result<()> {
         let def = engine::default_output_uid();
         for d in engine::list_output_devices() {
             let mark = if Some(&d.uid) == def.as_ref() { "*" } else { " " };
-            let kind = if d.wired { "wired" } else { "" };
-            println!("{mark} {:<40} {:<6} {}", d.name, kind, d.uid);
+            println!("{mark} {:<40} {}", d.name, d.uid);
         }
         return Ok(());
     }

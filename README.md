@@ -128,7 +128,7 @@ cargo doc --no-deps --open    # the API documentation
 | `data/` | Headphone measurements and target curves (CSV). |
 | `scripts/bundle.sh` | Builds and signs `Flatline.app`. |
 
-Environment knobs for testing: `FL_BUF=64` forces the buffer size, `FL_TAP=global` uses the global-mix tap instead of the device tap, `FL_DEMO=1` starts with factory settings without saving them, `FL_SHOT=out.png` writes a screenshot of the window after `FL_SHOT_SECS` seconds and quits. `FL_DEMO=1` alone opens the first-run setup; add `FL_STATE=live|bypass|disconnected|changed|blocked|error|asleep|switcher|settings` for the main screen in that state, or `FL_STATE=access|pick|sound` for a setup step.
+Environment knobs for testing: `FL_BUF=64` forces the buffer size, `FL_TAP=global` uses the global-mix tap instead of the device tap, `FL_DEMO=1` starts with factory settings without saving them, `FL_SHOT=out.png` writes a screenshot of the window after `FL_SHOT_SECS` seconds and quits. `FL_DEMO=1` alone opens the first-run setup; add `FL_STATE=live|bypass|speakers|new-output|switched|blocked|error|asleep|switcher|settings` for the main screen in that state, or `FL_STATE=access|pick|sound` for a setup step.
 
 ## Roadmap
 

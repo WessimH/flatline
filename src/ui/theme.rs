@@ -27,8 +27,10 @@ pub const HALO: Color32 = Color32::from_rgb(255, 122, 92);
 pub const SOLEIL: Color32 = Color32::from_rgb(255, 197, 110);
 /// The light: wine depth.
 pub const DEPTH: Color32 = Color32::from_rgb(58, 10, 22);
-/// Warnings: paused, blocked, disconnected.
+/// Warnings: blocked.
 pub const AMBER: Color32 = Color32::from_rgb(255, 154, 31);
+/// A profile's device is connected.
+pub const CONNECTED: Color32 = Color32::from_rgb(120, 214, 146);
 /// Errors and clipping.
 pub const ERROR: Color32 = Color32::from_rgb(255, 84, 84);
 
