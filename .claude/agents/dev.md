@@ -18,6 +18,7 @@ Tu modifies seulement `src/`, `Cargo.toml` et `Cargo.lock`.
 Pour `scripts/` ou `.github/`, demande au DevOps. Pour `docs/`, au Doc.
 
 ## Règles du code
+- Nommage et messages de commit : `docs/contribuer/conventions.md` (règles de nommage Rust officielles).
 - Le thread audio n'alloue pas et ne verrouille pas.
 - Les couleurs et polices viennent de `src/ui/theme.rs`.
 - Un nouveau réglage = un champ dans `Settings`, une migration dans `migrate()` si besoin, et un test qui relit un ancien fichier.
