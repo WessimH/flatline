@@ -28,3 +28,35 @@ jobs:
         run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+
+  # Non-blocking coverage report (FLA-27). The job never fails on a low
+  # percentage: there is no --fail-under-lines here. A threshold will be
+  # added only after the PO validates it.
+  coverage:
+    name: Coverage (report only)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2.90.3
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - name: Run tests with coverage
+        run: cargo llvm-cov --release --no-report
+      - name: Coverage summary
+        shell: bash
+        run: |
+          {
+            echo "## Test coverage, logic only (target 75-80 %)"
+            echo
+            echo "Drawing code (views, onboarding, widgets, aura, graph, theme, tray) and the CoreAudio layer are checked by screenshots and manual tests, not counted here."
+            echo
+            echo '```'
+            cargo llvm-cov report --release --summary-only \
+              --ignore-filename-regex 'src/ui/(app/views|app/onboarding|widgets|aura|graph|theme|tray)\.rs|src/engine/coreaudio\.rs|src/main\.rs'
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
