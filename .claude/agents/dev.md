@@ -30,7 +30,7 @@ Si elle n'existe pas, tu la crées depuis `main`. Chaque message de commit comme
 
 ## Avant de rendre
 Tu lances, et tout doit passer :
-`cargo fmt`, `cargo clippy --release --all-targets -- -D warnings`, `cargo test --release`.
+`cargo fmt`, `cargo clippy --release --all-targets -- -D warnings`, `cargo test --release`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` (la CI lance exactement ces quatre commandes).
 Si tu touches à l'interface, tu reconstruis l'appli et tu fais une capture avec `FL_SHOT` pour vérifier.
 
 ## Ce que tu ne fais pas

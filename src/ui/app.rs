@@ -66,7 +66,7 @@ pub struct HeadphoneOutput {
     /// Display name.
     pub name: String,
     /// The headphones on this output: a catalog key or `"custom"`. Empty in
-    /// v5 files, filled by [`migrate`].
+    /// v5 files, filled by `migrate()`.
     #[serde(default)]
     pub headphones: String,
 }
