@@ -1139,6 +1139,14 @@ impl FlatlineApp {
 
 impl eframe::App for FlatlineApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Scale the whole interface with the window (1320x880 = 1.0).
+        let zoom = ctx.zoom_factor();
+        let (w, h) = (ctx.content_rect().width() * zoom, ctx.content_rect().height() * zoom);
+        let want = (w / 1320.0).min(h / 880.0).clamp(1.0, 2.0);
+        if (want - zoom).abs() > 0.01 {
+            ctx.set_zoom_factor(want);
+        }
+
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
