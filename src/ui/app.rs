@@ -205,7 +205,8 @@ fn route_decision(want: Option<&str>, changed: bool, outputs: &[HeadphoneOutput]
     }
 }
 
-/// Upgrades settings saved by an older version (no side effects).
+/// Upgrades settings saved by an older version and brings out-of-range
+/// values back into range (no side effects).
 fn migrate(s: &mut Settings) {
     if s.version < 2 {
         // v2: low-latency device tap → smaller default buffer.
@@ -241,6 +242,19 @@ fn migrate(s: &mut Settings) {
         }
     }
     s.version = s.version.max(SETTINGS_VERSION);
+    // A hand-edited or damaged file: every value back in its control's range
+    // (amount 3.0 would triple the EQ, NaN would reach the audio thread).
+    let d = Settings::default();
+    let within = |v: f64, lo: f64, hi: f64, default: f64| if v.is_finite() { v.clamp(lo, hi) } else { default };
+    s.amount = within(s.amount, 0.0, 1.0, d.amount);
+    s.params.bass_db = within(s.params.bass_db, -6.0, 12.0, d.params.bass_db);
+    s.params.tilt_db_oct = within(s.params.tilt_db_oct, -1.5, 1.5, d.params.tilt_db_oct);
+    s.params.max_boost_db = within(s.params.max_boost_db, 0.0, 12.0, d.params.max_boost_db);
+    s.params.n_filters = s.params.n_filters.clamp(4, 16);
+    s.target = s.target.min(1);
+    if !BUFFER_SIZES.contains(&s.buffer_frames) {
+        s.buffer_frames = d.buffer_frames;
+    }
 }
 
 // ----------------------------------------------------------- designer ----
@@ -957,6 +971,13 @@ impl FlatlineApp {
 
     /// Uses a frequency-response CSV (dropped or browsed) as the headphones.
     fn load_measurement(&mut self, name: String, text: anyhow::Result<String>) {
+        // The name is shown on one line (toast, switcher): no line breaks,
+        // at most 40 characters.
+        let name: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        let name = match name.char_indices().nth(40) {
+            Some((i, _)) => format!("{}…", name[..i].trim_end()),
+            None => name,
+        };
         match text.and_then(|t| Curve::parse(&t).map(|c| (c, t))) {
             Ok((curve, csv)) => {
                 self.custom_curve = Some(curve);
@@ -1513,6 +1534,425 @@ mod tests {
         migrate(&mut s);
         assert!(!s.onboarded);
         assert_eq!(s.headphone_key, DEFAULT_KEY);
+    }
+
+    // ------------------------------------------------- migrate: edge cases --
+
+    #[test]
+    fn out_of_range_values_are_brought_back() {
+        let mut s = Settings {
+            amount: 3.0,
+            target: 7,
+            buffer_frames: 100,
+            params: DesignParams { bass_db: 40.0, tilt_db_oct: -9.0, max_boost_db: -2.0, n_filters: 500 },
+            ..Settings::default()
+        };
+        migrate(&mut s);
+        assert_eq!((s.amount, s.target, s.buffer_frames), (1.0, 1, 128));
+        assert_eq!(s.params, DesignParams { bass_db: 12.0, tilt_db_oct: -1.5, max_boost_db: 0.0, n_filters: 16 });
+
+        let mut s = Settings {
+            amount: -0.5,
+            buffer_frames: 0,
+            params: DesignParams { bass_db: -40.0, tilt_db_oct: 9.0, max_boost_db: 99.0, n_filters: 0 },
+            ..Settings::default()
+        };
+        migrate(&mut s);
+        assert_eq!((s.amount, s.buffer_frames), (0.0, 128));
+        assert_eq!(s.params, DesignParams { bass_db: -6.0, tilt_db_oct: 1.5, max_boost_db: 12.0, n_filters: 4 });
+    }
+
+    #[test]
+    fn non_finite_values_take_their_default() {
+        let mut s = Settings {
+            amount: f64::NAN,
+            params: DesignParams {
+                bass_db: f64::INFINITY,
+                tilt_db_oct: f64::NAN,
+                max_boost_db: f64::NEG_INFINITY,
+                n_filters: 10,
+            },
+            ..Settings::default()
+        };
+        migrate(&mut s);
+        assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn values_in_range_are_kept() {
+        for frames in BUFFER_SIZES {
+            let mut s = Settings { buffer_frames: frames, amount: 0.35, ..Settings::default() };
+            migrate(&mut s);
+            assert_eq!((s.buffer_frames, s.amount), (frames, 0.35));
+        }
+    }
+
+    /// An empty or partial file: the missing fields take their default.
+    /// Without `version` it counts as a v1 file from someone already set up.
+    #[test]
+    fn empty_or_partial_files_get_the_defaults() {
+        let mut s: Settings = ron::from_str("()").expect("empty settings parse");
+        migrate(&mut s);
+        let d = Settings::default();
+        assert_eq!((s.headphone_key.as_str(), s.amount, s.buffer_frames), (DEFAULT_KEY, d.amount, 128));
+        assert_eq!((s.enabled, s.level_match, s.engine_on, s.version), (true, true, true, SETTINGS_VERSION));
+        assert!(s.onboarded);
+
+        let mut s: Settings = ron::from_str("(amount: 0.5, enabled: false, version: 6)").expect("partial parse");
+        migrate(&mut s);
+        assert_eq!(s, Settings { amount: 0.5, enabled: false, ..Settings::default() });
+    }
+
+    /// A file from a newer Flatline: unknown fields are ignored, the known
+    /// ones kept, and the version is not lowered.
+    #[test]
+    fn a_future_file_keeps_what_it_knows() {
+        let future = "(headphone_key: \"oratory1990/Beyerdynamic DT 770 Pro (worn earpads)\", onboarded: true, \
+                      amount: 0.6, buffer_frames: 256, new_feature: Some((x: 1)), version: 99)";
+        let mut s: Settings = ron::from_str(future).expect("future settings parse");
+        migrate(&mut s);
+        assert_eq!((s.headphone_key.as_str(), s.amount, s.buffer_frames), (LEGACY_KEYS[1], 0.6, 256));
+        assert!(s.onboarded);
+        assert_eq!(s.version, 99);
+    }
+
+    /// v1 files had a large buffer (no device tap yet): it drops to 128.
+    #[test]
+    fn v1_and_v2_files_are_migrated() {
+        let v1 = "(headphone: 1, amount: 0.9, buffer_frames: 512, version: 1)";
+        let mut s: Settings = ron::from_str(v1).expect("v1 settings parse");
+        migrate(&mut s);
+        assert_eq!((s.headphone_key.as_str(), s.amount, s.buffer_frames), (LEGACY_KEYS[1], 0.9, 128));
+        assert!(s.onboarded);
+        assert_eq!(s.version, SETTINGS_VERSION);
+
+        // v2 keeps the buffer the user chose; an index past the old list
+        // takes the last built-in measurement.
+        let v2 = "(headphone: 9, buffer_frames: 512, params: (bass_db: 6.5, tilt_db_oct: 0.0, \
+                  max_boost_db: 8.0, n_filters: 10), version: 2)";
+        let mut s: Settings = ron::from_str(v2).expect("v2 settings parse");
+        migrate(&mut s);
+        assert_eq!((s.headphone_key.as_str(), s.buffer_frames, s.params.bass_db), (LEGACY_KEYS[3], 512, 6.0));
+    }
+
+    /// A damaged file does not parse: the app then starts from the defaults
+    /// (`unwrap_or_default` in `FlatlineApp::new`).
+    #[test]
+    fn a_damaged_file_does_not_parse() {
+        for text in ["", "{\"amount\": 0.5}", "(amount: \"loud\")", "(amount: 0.5", "\u{0}\u{1}garbage"] {
+            assert!(ron::from_str::<Settings>(text).is_err(), "{text:?} parsed");
+        }
+        let mut s = ron::from_str::<Settings>("not settings").unwrap_or_default();
+        migrate(&mut s);
+        assert_eq!(s, Settings::default());
+    }
+
+    // ------------------------------------------------------------ build_eq --
+
+    fn bands() -> Vec<Filter> {
+        use crate::dsp::biquad::FilterKind::{HighShelf, LowShelf, Peak};
+        vec![
+            Filter { kind: LowShelf, freq: 105.0, q: 0.7, gain_db: 4.0 },
+            Filter { kind: Peak, freq: 1000.0, q: 1.0, gain_db: -6.0 },
+            Filter { kind: Peak, freq: 3000.0, q: 2.0, gain_db: 3.0 },
+            Filter { kind: HighShelf, freq: 10_000.0, q: 0.7, gain_db: -2.0 },
+        ]
+    }
+
+    fn db(lin: f64) -> f64 {
+        20.0 * lin.log10()
+    }
+
+    /// The response of the bands as the audio thread will play them.
+    fn response(filters: &[Filter], amount: f64, fs: f64) -> Vec<f64> {
+        let scaled: Vec<Filter> = filters.iter().map(|f| Filter { gain_db: f.gain_db * amount, ..*f }).collect();
+        cascade_response(&scaled, &crate::dsp::curve::log_grid(), fs)
+    }
+
+    #[test]
+    fn no_correction_at_amount_zero() {
+        let (eq, preamp) = build_eq(&bands(), 0.0, true, 48_000.0);
+        assert_eq!(eq.count, 4);
+        assert!(response(&bands(), 0.0, 48_000.0).iter().all(|g| g.abs() < 1e-9));
+        // Only the fixed 0.3 dB of headroom, matched on the bypass.
+        assert!((preamp + 0.3).abs() < 1e-9, "{preamp}");
+        assert!((db(eq.preamp) - preamp).abs() < 1e-9);
+        assert!((eq.dry_gain - eq.preamp).abs() < 1e-9);
+    }
+
+    #[test]
+    fn full_correction_at_amount_one() {
+        let fs = 48_000.0;
+        let (eq, preamp) = build_eq(&bands(), 1.0, false, fs);
+        // The preamp leaves 0.3 dB below the highest boost of the bands.
+        let peak = fit::max_gain_db(&bands(), fs);
+        assert!(peak > 3.0, "{peak}");
+        assert!((preamp + peak + 0.3).abs() < 1e-9, "{preamp} {peak}");
+        assert_eq!(eq.count, 4);
+        assert_eq!(eq.coeffs[1], crate::dsp::biquad::Coeffs::design(&bands()[1], fs));
+        // Half the amount: half the gain of every band.
+        let half = response(&bands(), 0.5, fs);
+        let full = response(&bands(), 1.0, fs);
+        assert!(half.iter().zip(&full).all(|(h, f)| (h * 2.0 - f).abs() < 0.2));
+        assert!(build_eq(&bands(), 0.5, false, fs).1 > preamp);
+    }
+
+    #[test]
+    fn level_match_sets_the_bypass_gain() {
+        let fs = 48_000.0;
+        let (off, preamp) = build_eq(&bands(), 1.0, false, fs);
+        assert_eq!(off.dry_gain, 1.0, "bypass untouched without level match");
+        let (on, same) = build_eq(&bands(), 1.0, true, fs);
+        assert_eq!((on.preamp, same), (off.preamp, preamp), "level match only changes the bypass");
+        // The bypass plays at the level of the corrected signal, 100 Hz–8 kHz.
+        let grid = crate::dsp::curve::log_grid();
+        let mean = band_mean(&grid, &response(&bands(), 1.0, fs), 100.0, 8000.0);
+        assert!((db(on.dry_gain) - (preamp + mean)).abs() < 1e-9);
+        assert!(on.dry_gain < 1.0 && on.dry_gain != off.dry_gain);
+    }
+
+    #[test]
+    fn every_sample_rate_gets_its_own_coefficients() {
+        let eqs = [44_100.0, 48_000.0, 96_000.0].map(|fs| build_eq(&bands(), 1.0, true, fs));
+        for ((eq, preamp), fs) in eqs.iter().zip([44_100.0, 48_000.0, 96_000.0]) {
+            assert_eq!(eq.count, 4);
+            assert!(eq.preamp.is_finite() && eq.dry_gain.is_finite() && (-8.0..0.0).contains(preamp), "{fs}");
+            assert_eq!(eq.coeffs[2], crate::dsp::biquad::Coeffs::design(&bands()[2], fs));
+        }
+        assert_ne!(eqs[0].0.coeffs[2], eqs[1].0.coeffs[2]);
+        assert_ne!(eqs[1].0.coeffs[2], eqs[2].0.coeffs[2]);
+    }
+
+    #[test]
+    fn no_bands_leave_the_signal_untouched() {
+        for level_match in [false, true] {
+            let (eq, preamp) = build_eq(&[], 1.0, level_match, 44_100.0);
+            assert_eq!((eq.count, preamp, eq.preamp, eq.dry_gain), (0, 0.0, 1.0, 1.0));
+        }
+    }
+
+    // ------------------------------------------------- the app in a test ----
+
+    const AIRPODS_KEY: &str = "Rtings/HMS II.3/Apple AirPods Pro";
+    const SCARLETT: (&str, &str) = ("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1", "Scarlett Solo USB");
+
+    /// The app on simulated outputs (`devices`, the first one the default),
+    /// without window, menu-bar icon or CoreAudio.
+    fn app(s: Settings, devices: &[(&str, &str)]) -> FlatlineApp {
+        let sc = sim::Scenario {
+            settings: Some(s),
+            devices: devices.iter().map(|&(u, n)| (u.into(), n.into())).collect(),
+            default: devices.first().map(|d| d.0.into()),
+            steps: Vec::new(),
+        };
+        let now = Instant::now();
+        let (s, sim) = Sim::new(sc, now);
+        FlatlineApp::build(&egui::Context::default(), s, true, Some(sim), None, Default::default(), now)
+    }
+
+    fn set_up() -> Settings {
+        Settings { onboarded: true, ..Settings::default() }
+    }
+
+    /// 31 rows of `frequency, dB`: a valid measurement.
+    fn csv() -> String {
+        (0..31).map(|i| format!("{:.1}, {:.1}\n", 20.0 * 2f64.powf(i as f64 / 3.0), (i % 5) as f64)).collect()
+    }
+
+    fn toast(app: &FlatlineApp) -> &str {
+        app.toast.as_ref().map_or("", |t| t.0.as_str())
+    }
+
+    // ------------------------------------------------------------- names ----
+
+    #[test]
+    fn headphones_are_named_model_and_variant() {
+        let mut app = app(set_up(), &[SCARLETT]);
+        assert_eq!(app.headphones_name(DEFAULT_KEY), "DT 770 Pro");
+        assert_eq!(app.headphones_name(LEGACY_KEYS[1]), "DT 770 Pro · Worn pads");
+        assert_eq!(app.headphones_name("no/such/key"), "no/such/key");
+        // A custom key without a measurement keeps the key; with one, its name.
+        assert_eq!(app.headphones_name(CUSTOM_KEY), CUSTOM_KEY);
+        app.s.custom = Some(CustomCurve { name: "My HD 600".into(), csv: csv() });
+        assert_eq!(app.headphones_name(CUSTOM_KEY), "My HD 600");
+    }
+
+    #[test]
+    fn the_speakers_are_named_after_the_mac() {
+        let spk = |name| app(set_up(), &[SCARLETT, ("BuiltInSpeakerDevice", name)]).speakers_name();
+        assert_eq!(spk("MacBook Pro Speakers"), "MacBook Pro");
+        assert_eq!(spk("Haut-parleurs MacBook Air"), "MacBook Air");
+        assert_eq!(spk("iMac"), "iMac");
+        assert_eq!(app(set_up(), &[SCARLETT]).speakers_name(), "Mac");
+    }
+
+    #[test]
+    fn the_label_follows_the_selection() {
+        let mut app = app(set_up(), &[SCARLETT]);
+        assert_eq!(app.headphone_label(), ("DT 770 Pro".into(), None));
+        assert_eq!(app.headphone_name(), "DT 770 Pro");
+        app.select_headphones(LEGACY_KEYS[1]);
+        assert_eq!(app.headphone_label(), ("DT 770 Pro".into(), Some("Worn pads".into())));
+        assert_eq!(app.headphone_name(), "DT 770 Pro · Worn pads");
+        app.load_measurement("My HD 600".into(), Ok(csv()));
+        assert_eq!(app.headphone_label(), ("My HD 600".into(), Some("Your measurement".into())));
+        // The custom key without its measurement (never kept by `build`).
+        app.s.custom = None;
+        assert_eq!(app.headphone_label(), ("Headphones".into(), None));
+        assert_eq!(app.headphone_name(), "Headphones");
+    }
+
+    #[test]
+    fn the_target_name_follows_the_headphones() {
+        let mut app = app(set_up(), &[SCARLETT]);
+        let rig = |key: &str| Catalog::get().target_name(Catalog::get().find(key).expect("in the catalog"));
+        assert_eq!(app.target_name(), rig(DEFAULT_KEY));
+        // oratory1990 over-ear: the Optimum target is allowed.
+        app.s.target = 1;
+        assert_eq!(app.target_name(), profiles::TARGETS[1].name);
+        // Other rigs: the Optimum target falls back to the rig's own.
+        app.s.headphone_key = AIRPODS_KEY.into();
+        assert_eq!(app.target_name(), rig(AIRPODS_KEY));
+        assert_ne!(rig(AIRPODS_KEY), profiles::TARGETS[1].name);
+        // A custom measurement may use either target.
+        app.load_measurement("Mine".into(), Ok(csv()));
+        app.s.target = 0;
+        assert_eq!(app.target_name(), profiles::TARGETS[0].name);
+        app.s.target = 1;
+        assert_eq!(app.target_name(), profiles::TARGETS[1].name);
+    }
+
+    #[test]
+    fn the_menu_bar_says_each_state() {
+        let mut app = app(set_up(), &[SCARLETT]);
+        let cases = [
+            (Status::Live, "● Live · Scarlett Solo USB"),
+            (Status::Starting, "Starting…"),
+            (Status::Blocked, "Blocked by macOS · open Flatline"),
+            (Status::Error, "Engine error · open Flatline"),
+            (Status::Standby, "Standby (system audio untouched)"),
+            (Status::Asleep, "Paused · Mac asleep"),
+            (Status::Speakers, "Paused · speakers aren't corrected"),
+            (Status::NoOutput, "Paused · no audio output"),
+        ];
+        for (status, text) in cases {
+            app.status = status;
+            assert_eq!(app.tray_status(), text);
+        }
+        // Live without an engine device: no name after the dot.
+        app.drop_engine();
+        app.status = Status::Live;
+        assert_eq!(app.tray_status(), "● Live · ");
+    }
+
+    #[test]
+    fn the_eq_text_lists_every_band() {
+        let mut app = app(set_up(), &[SCARLETT]);
+        assert_eq!(app.eq_text(), "", "no design yet");
+        app.design = Some(fit::Design {
+            grid: Vec::new(),
+            measured: Vec::new(),
+            target: Vec::new(),
+            filters: bands(),
+            error_before_db: 0.0,
+            error_after_db: 0.0,
+            fs: 48_000.0,
+        });
+        app.preamp_db = -4.04;
+        app.s.amount = 0.5;
+        assert_eq!(
+            app.eq_text(),
+            "Preamp: -4.0 dB\n\
+             Filter 1: ON LSC Fc 105 Hz Gain 2.0 dB Q 0.70\n\
+             Filter 2: ON PK Fc 1000 Hz Gain -3.0 dB Q 1.00\n\
+             Filter 3: ON PK Fc 3000 Hz Gain 1.5 dB Q 2.00\n\
+             Filter 4: ON HSC Fc 10000 Hz Gain -1.0 dB Q 0.70\n"
+        );
+    }
+
+    // --------------------------------------------------- load_measurement ----
+
+    #[test]
+    fn a_valid_measurement_becomes_the_headphones() {
+        let mut app = app(set_up(), &[SCARLETT]);
+        app.load_measurement("My HD 600".into(), Ok(csv()));
+        assert_eq!(app.s.custom, Some(CustomCurve { name: "My HD 600".into(), csv: csv() }));
+        assert_eq!(app.custom_curve.as_ref().map(|c| c.freq.len()), Some(31));
+        assert_eq!(app.s.headphone_key, CUSTOM_KEY);
+        assert_eq!(toast(&app), "Loaded measurement “My HD 600”");
+        // Remembered for the output that plays, not added to the switcher.
+        assert_eq!(app.s.headphone_outputs[0].headphones, CUSTOM_KEY);
+        assert!(!app.s.my_headphones.iter().any(|k| k == CUSTOM_KEY));
+    }
+
+    #[test]
+    fn a_measurement_dropped_during_setup_is_selected_there() {
+        let mut app = app(Settings::default(), &[SCARLETT]);
+        assert!(app.onb.is_some());
+        app.load_measurement("Mine".into(), Ok(csv()));
+        assert_eq!(app.s.headphone_key, CUSTOM_KEY);
+    }
+
+    #[test]
+    fn a_bad_measurement_changes_nothing() {
+        let mut app = app(set_up(), &[SCARLETT]);
+        app.load_measurement("Before".into(), Ok(csv()));
+        let (s, freq) = (app.s.clone(), app.custom_curve.as_ref().map(|c| c.freq.clone()));
+        let nan: String = (0..20).map(|i| format!("{}, NaN\n", 100 + i)).collect();
+        let nine_and_nan = csv().lines().take(9).collect::<Vec<_>>().join("\n") + "\n5000, nan\n6000, inf\n";
+        let cases: [(&str, anyhow::Result<String>); 7] = [
+            ("empty", Ok(String::new())),
+            ("text", Ok("Hello, this is not a measurement.\nNor is this.".into())),
+            ("one line", Ok("1000, 0.0".into())),
+            ("nan", Ok(nan)),
+            ("nine and nan", Ok(nine_and_nan)),
+            ("negative", Ok((0..20).map(|i| format!("-{}, 1.0\n", 100 + i)).collect())),
+            ("unreadable", Err(anyhow::anyhow!("permission denied"))),
+        ];
+        for (name, text) in cases {
+            app.load_measurement(name.into(), text);
+            assert!(toast(&app).starts_with(&format!("Could not read {name}: ")), "{}", toast(&app));
+            assert_eq!(app.s, s, "{name}: settings unchanged");
+            assert_eq!(app.custom_curve.as_ref().map(|c| c.freq.clone()), freq, "{name}: curve unchanged");
+        }
+        assert_eq!(toast(&app), "Could not read unreadable: permission denied");
+    }
+
+    /// Rows in any order are sorted (some tools write high to low); a NaN
+    /// row among valid ones is skipped.
+    #[test]
+    fn rows_are_sorted_and_bad_rows_skipped() {
+        let mut app = app(set_up(), &[SCARLETT]);
+        let reversed: String = csv().lines().rev().map(|l| format!("{l}\n")).collect();
+        app.load_measurement("Reversed".into(), Ok(format!("frequency,raw\n{reversed}1000, NaN\n")));
+        let c = app.custom_curve.as_ref().expect("loaded");
+        assert_eq!(c.freq.len(), 31);
+        assert!(c.freq.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(app.s.headphone_key, CUSTOM_KEY);
+    }
+
+    /// The file name goes on one line: control characters become spaces and
+    /// long names are cut at 40 characters.
+    #[test]
+    fn odd_file_names_fit_on_one_line() {
+        let mut app = app(set_up(), &[SCARLETT]);
+        app.load_measurement("HD 600\nleft\tear\r".into(), Ok(csv()));
+        assert_eq!(toast(&app), "Loaded measurement “HD 600 left ear ”");
+        assert_eq!(app.s.custom.as_ref().map(|c| c.name.as_str()), Some("HD 600 left ear "));
+
+        let long = "Sennheiser HD 600 measured on my own rig ".repeat(10);
+        app.load_measurement(long, Ok(csv()));
+        let name = app.s.custom.as_ref().map(|c| c.name.clone()).unwrap();
+        assert_eq!(name, "Sennheiser HD 600 measured on my own rig…");
+        assert_eq!(name.chars().count(), 41);
+        assert_eq!(toast(&app), format!("Loaded measurement “{name}”"));
+
+        // Multi-byte characters are never cut in half.
+        app.load_measurement("é".repeat(50), Err(anyhow::anyhow!("unreadable")));
+        assert_eq!(toast(&app), format!("Could not read {}…: unreadable", "é".repeat(40)));
+        // 40 characters exactly: kept whole.
+        app.load_measurement("a".repeat(40), Ok(csv()));
+        assert_eq!(app.s.custom.as_ref().map(|c| c.name.clone()), Some("a".repeat(40)));
     }
 
     #[test]
