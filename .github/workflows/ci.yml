@@ -51,9 +51,12 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Test coverage (lines, report only)"
+            echo "## Test coverage, logic only (target 75-80 %)"
+            echo
+            echo "Drawing code (views, onboarding, widgets, aura, graph, theme, tray) and the CoreAudio layer are checked by screenshots and manual tests, not counted here."
             echo
             echo '```'
-            cargo llvm-cov report --release --summary-only
+            cargo llvm-cov report --release --summary-only \
+              --ignore-filename-regex 'src/ui/(app/views|app/onboarding|widgets|aura|graph|theme|tray)\.rs|src/engine/coreaudio\.rs|src/main\.rs'
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
