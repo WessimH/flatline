@@ -704,6 +704,10 @@ impl IoState {
 
             for (i, fr) in buf.iter_mut().enumerate() {
                 for c in 0..2 {
+                    // Never send NaN or infinity to the DAC: it would pass the clamp below.
+                    if !fr[c].is_finite() {
+                        fr[c] = 0.0;
+                    }
                     let a = fr[c].abs();
                     pout[c] = pout[c].max(a);
                     if a > 1.0 {
