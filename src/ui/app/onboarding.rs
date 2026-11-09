@@ -486,7 +486,7 @@ impl FlatlineApp {
         p.text(
             Pos2::new(content.left() + 24.0, info_y),
             Align2::LEFT_TOP,
-            "Flatline can’t detect wired headphones: pick yours once, it remembers.",
+            "Flatline can’t detect your headphones: pick yours once, it remembers.",
             body(14.0),
             MIST,
         );

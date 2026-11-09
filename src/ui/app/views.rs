@@ -1,5 +1,5 @@
 //! The Horizon views: header, hero, chart card, control cards, the state
-//! cards (bypass, paused, disconnected, output changed, blocked, error), the
+//! cards (bypass, paused, speakers, blocked, error), the
 //! settings sheet, the headphone switcher and the overlays.
 
 use super::super::aura::Mood;
@@ -80,6 +80,7 @@ impl FlatlineApp {
             self.blocked_overlay(ui, full);
         }
         if self.switcher_open {
+            ui.painter().rect_filled(full, 0.0, alpha(NIGHT, 0.6));
             self.switcher(ui, hero_left);
         } else {
             self.switcher_shown = false;
@@ -108,7 +109,6 @@ impl FlatlineApp {
         );
         let device = self.engine.as_ref().map(|e| e.info.device.name.clone()).unwrap_or_default();
         let rate = self.engine.as_ref().map_or(0.0, |e| e.info.sample_rate / 1000.0);
-        let hp_out = self.s.headphone_output_name.clone().unwrap_or_else(|| "your headphones".into());
         let (text, tone) = match self.status {
             Status::Live if self.s.enabled => (format!("Live · {device} · {rate:.0} kHz"), Tone::Live),
             Status::Live => (format!("Bypass · {device} · {rate:.0} kHz"), Tone::Neutral),
@@ -117,14 +117,21 @@ impl FlatlineApp {
             Status::Error => ("Error".to_owned(), Tone::Error),
             Status::Standby => ("Off · system audio untouched".to_owned(), Tone::Neutral),
             Status::Asleep => ("Paused · Mac asleep".to_owned(), Tone::Neutral),
-            Status::Disconnected => (format!("Disconnected · {hp_out}"), Tone::Warning),
-            Status::OutputChanged => (format!("Paused · output is {}", self.current_output_name), Tone::Warning),
+            Status::Speakers => (format!("Speakers · {}", self.speakers_name()), Tone::Neutral),
         };
-        let pill_w = ui.painter().layout_no_wrap(text.clone(), body(14.0), MILK).size().x + 50.0;
-        let pill = Rect::from_center_size(Pos2::new(rect.center().x, rect.center().y), Vec2::new(pill_w, 40.0));
-        ui.scope_builder(UiBuilder::new().max_rect(pill), |ui| {
-            widgets::status_pill(ui, &text, tone, time);
-        });
+        if self.invite.is_some() && self.status != Status::Speakers {
+            let banner = Rect::from_min_max(
+                Pos2::new(rect.left() + 300.0, rect.center().y - 30.0),
+                Pos2::new(rect.right() - 112.0, rect.center().y + 30.0),
+            );
+            self.new_output_banner(ui, banner, tone, time);
+        } else {
+            let pill_w = ui.painter().layout_no_wrap(text.clone(), body(14.0), MILK).size().x + 50.0;
+            let pill = Rect::from_center_size(Pos2::new(rect.center().x, rect.center().y), Vec2::new(pill_w, 40.0));
+            ui.scope_builder(UiBuilder::new().max_rect(pill), |ui| {
+                widgets::status_pill(ui, &text, tone, time);
+            });
+        }
         let buttons = Rect::from_min_max(Pos2::new(rect.right() - 100.0, rect.top() + 4.0), rect.max);
         ui.scope_builder(UiBuilder::new().max_rect(buttons).layout(Layout::right_to_left(Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
@@ -139,13 +146,59 @@ impl FlatlineApp {
         });
     }
 
+    /// The banner on a new output: keep the current headphones on it, or
+    /// choose others.
+    fn new_output_banner(&mut self, ui: &mut Ui, rect: Rect, tone: Tone, time: f64) {
+        paint_glass(ui.painter(), rect, 30);
+        let output = self.invite.as_deref().map(|u| self.device_name(u)).unwrap_or_default();
+        let model = short_model(&self.headphone_name());
+        let state = match self.status {
+            Status::Live if self.s.enabled => "Live",
+            Status::Live => "Bypass",
+            _ => "Starting",
+        };
+        let (mut yes, mut choose, mut close) = (false, false, false);
+        let inner = rect.shrink2(Vec2::new(12.0, 0.0));
+        ui.scope_builder(UiBuilder::new().max_rect(inner).layout(Layout::left_to_right(Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            widgets::status_pill(ui, state, tone, time);
+            let line1 = format!("New output: {output}");
+            let line2 = format!("Still {model}?");
+            let text_w = ui.painter().layout_no_wrap(line1.clone(), medium(16.0), MILK).size().x;
+            ui.allocate_ui_with_layout(Vec2::new(text_w, 42.0), Layout::top_down(Align::Min), |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.label(RichText::new(line1).font(medium(16.0)).color(MILK));
+                ui.label(RichText::new(line2).font(body(14.0)).color(MIST));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                close = widgets::glass_icon_button(ui, Icon::Close, 34.0).on_hover_text("Not now").clicked();
+                choose = primary_button(ui, "Choose headphones").clicked();
+                yes = secondary_button(ui, &format!("Yes, {model}")).clicked();
+            });
+        });
+        if yes {
+            let key = self.s.headphone_key.clone();
+            self.select_headphones(&key);
+        }
+        if choose {
+            self.switcher_open = true;
+            self.settings_open = false;
+        }
+        if close {
+            self.invite = None;
+        }
+    }
+
     // ------------------------------------------------------------ hero --
 
     fn hero(&mut self, ui: &mut Ui, time: f64) {
-        let (model, variant) = self.headphone_label();
+        let speakers = self.status == Status::Speakers;
+        let (model, variant) = if speakers { ("Built-in Speakers".to_owned(), None) } else { self.headphone_label() };
         let (l1, l2) = hero_title(&model);
         ui.spacing_mut().item_spacing.y = 14.0;
         let eyebrow = match self.entry() {
+            _ if speakers => "NOW PLAYING ON".to_owned(),
             Some(e) => format!("NOW CALIBRATING · {}", e.brand.to_uppercase()),
             None => "NOW CALIBRATING".to_owned(),
         };
@@ -173,19 +226,24 @@ impl FlatlineApp {
         if let Some(v) = variant {
             sub = format!("{} · {sub}", capitalize(&v));
         }
+        if speakers {
+            sub = format!("{} · no correction", self.speakers_name());
+        }
         ui.label(RichText::new(sub).font(light(16.0)).color(MIST));
         let default_bass = self.entry().map_or(6.0, |e| e.default_bass_db);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-            for pr in presets(default_bass) {
-                let sel = (self.s.params.bass_db - pr.bass).abs() < 0.05
-                    && (self.s.params.tilt_db_oct - pr.tilt).abs() < 0.005;
-                if widgets::pill(ui, pr.name, sel).on_hover_text(pr.blurb).clicked() {
-                    self.s.params.bass_db = pr.bass;
-                    self.s.params.tilt_db_oct = pr.tilt;
+        if !speakers {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                for pr in presets(default_bass) {
+                    let sel = (self.s.params.bass_db - pr.bass).abs() < 0.05
+                        && (self.s.params.tilt_db_oct - pr.tilt).abs() < 0.005;
+                    if widgets::pill(ui, pr.name, sel).on_hover_text(pr.blurb).clicked() {
+                        self.s.params.bass_db = pr.bass;
+                        self.s.params.tilt_db_oct = pr.tilt;
+                    }
                 }
-            }
-        });
+            });
+        }
 
         // Power row pinned to the bottom of the column.
         let rest = ui.available_rect_before_wrap();
@@ -199,7 +257,6 @@ impl FlatlineApp {
                 self.s.enabled = !self.s.enabled;
             }
             let hp_name = self.headphone_name();
-            let hp_out = self.s.headphone_output_name.clone().unwrap_or_else(|| "your headphones".into());
             let (t, sub) = match self.status {
                 Status::Live | Status::Starting if self.s.enabled => {
                     ("Correction on", "Press Space to hear the difference".to_owned())
@@ -207,8 +264,7 @@ impl FlatlineApp {
                 Status::Live | Status::Starting => {
                     ("Bypass", format!("You are hearing the raw {}", short_model(&hp_name)))
                 }
-                Status::Disconnected => ("Paused", format!("Waiting for {hp_out}")),
-                Status::OutputChanged => ("Paused", format!("Output is {}", self.current_output_name)),
+                Status::Speakers => ("No correction", "Built-in speakers".to_owned()),
                 Status::Asleep => ("Paused", "Your Mac is asleep".to_owned()),
                 Status::Blocked => ("Blocked", "macOS is not sharing system audio".to_owned()),
                 Status::Error => ("Stopped", "The audio engine could not start".to_owned()),
@@ -248,13 +304,14 @@ impl FlatlineApp {
     // ----------------------------------------------------------- chart --
 
     fn chart_card(&mut self, ui: &mut Ui, rect: Rect, _time: f64) {
+        self.chart_rect = rect;
         paint_glass(ui.painter(), rect, 30);
         let inner = rect.shrink2(Vec2::new(26.0, 22.0));
         ui.scope_builder(UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)), |ui| {
             let head = Rect::from_min_size(inner.min, Vec2::new(inner.width(), 70.0));
             let p = ui.painter();
             p.text(head.left_top(), Align2::LEFT_TOP, "Frequency response", medium(17.0), MILK);
-            let name = self.headphone_name();
+            let name = if self.status == Status::Speakers { "Speakers".to_owned() } else { self.headphone_name() };
             let legend = [("Result".to_owned(), SOLEIL), (short_model(&name), HALO), ("Target".to_owned(), MILK)];
             let mut x = head.left();
             for (k, (label, col)) in legend.into_iter().enumerate() {
@@ -318,26 +375,29 @@ impl FlatlineApp {
 
         // State cards over the chart.
         match self.status {
-            Status::Disconnected if !self.pause_card_dismissed => self.disconnected_card(ui, rect),
-            Status::OutputChanged if !self.pause_card_dismissed => self.output_changed_card(ui, rect),
+            Status::Speakers => self.speakers_card(ui, rect),
             Status::Error => self.error_card(ui, rect),
             Status::Asleep => self.asleep_card(ui, rect),
             _ => {}
         }
     }
 
+    /// A state card of `height`, centred in the plot of the chart at `area`.
+    fn card_rect(area: Rect, height: f32) -> Rect {
+        // Below the chart header and legend.
+        let plot = Rect::from_min_max(area.min + Vec2::new(0.0, 92.0), area.max);
+        Rect::from_center_size(plot.center(), Vec2::new((area.width() - 120.0).min(560.0), height))
+    }
+
     fn state_card(
         ui: &mut Ui,
-        area: Rect,
+        card: Rect,
         icon: Icon,
         color: Color32,
         title_text: &str,
         body_text: &str,
         add: impl FnOnce(&mut Ui),
     ) {
-        // Centred in the plot, below the chart header and legend.
-        let plot = Rect::from_min_max(area.min + Vec2::new(0.0, 92.0), area.max);
-        let card = Rect::from_center_size(plot.center(), Vec2::new((area.width() - 120.0).min(540.0), 320.0));
         let p = ui.painter();
         p.rect_filled(card, CornerRadius::same(28), Color32::from_rgba_unmultiplied(26, 22, 28, 238));
         p.rect_stroke(card, CornerRadius::same(28), Stroke::new(1.0, alpha(color, 0.35)), StrokeKind::Inside);
@@ -358,58 +418,25 @@ impl FlatlineApp {
         });
     }
 
-    fn disconnected_card(&mut self, ui: &mut Ui, area: Rect) {
-        let hp = self.s.headphone_output_name.clone().unwrap_or_else(|| "your headphones".into());
-        let now = self.current_output_name.clone();
-        let mut dismiss = false;
+    fn speakers_card(&mut self, ui: &mut Ui, area: Rect) {
         Self::state_card(
             ui,
-            area,
-            Icon::Unplug,
-            AMBER,
-            "Your headphones are disconnected",
-            &format!("Correction is paused. Plug {hp} back in and Flatline resumes on its own."),
-            |ui| {
-                if !now.is_empty() && secondary_button(ui, &format!("Use {now} without correction")).clicked() {
-                    dismiss = true;
-                }
-            },
-        );
-        if dismiss {
-            self.pause_card_dismissed = true;
-        }
-    }
-
-    fn output_changed_card(&mut self, ui: &mut Ui, area: Rect) {
-        let name = self.headphone_name();
-        let now = self.current_output_name.clone();
-        let (mut switch, mut keep, mut use_here) = (false, false, false);
-        Self::state_card(
-            ui,
-            area,
-            Icon::Headphones,
-            AMBER,
-            &format!("Output switched to {now}"),
-            &format!("Your {} profile doesn't match these headphones. Correction is paused.", short_model(&name)),
+            Self::card_rect(area, 290.0),
+            Icon::Speaker,
+            MIST,
+            "Speakers aren’t corrected",
+            "Flatline corrects headphones. Connect a pair and its profile loads on its own.",
             |ui| {
                 ui.horizontal(|ui| {
-                    switch = primary_button(ui, "Switch profile").clicked();
-                    use_here = secondary_button(ui, "Correct here anyway").clicked();
-                    keep = secondary_button(ui, "Keep paused").clicked();
+                    let text = ui.painter().layout_no_wrap("Listening for headphones…".into(), body(14.5), MILK);
+                    ui.add_space((ui.available_width() - text.size().x - 14.0) / 2.0);
+                    let (r, _) = ui.allocate_exact_size(Vec2::new(14.0 + text.size().x, 20.0), Sense::hover());
+                    let p = ui.painter();
+                    p.circle_filled(Pos2::new(r.left() + 4.0, r.center().y), 3.5, MILK);
+                    p.galley(Pos2::new(r.left() + 14.0, r.center().y - text.size().y / 2.0), text, MILK);
                 });
             },
         );
-        if switch {
-            self.switcher_open = true;
-        }
-        if use_here {
-            // Adopt the new output as the headphones' output.
-            self.s.headphone_output = self.default_uid.clone();
-            self.s.headphone_output_name = Some(now);
-        }
-        if keep {
-            self.pause_card_dismissed = true;
-        }
     }
 
     fn error_card(&mut self, ui: &mut Ui, area: Rect) {
@@ -424,7 +451,7 @@ impl FlatlineApp {
         let (mut retry, mut other) = (false, false);
         Self::state_card(
             ui,
-            area,
+            Self::card_rect(area, 344.0),
             Icon::Warning,
             ERROR,
             &format!("Can't start audio on {device}"),
@@ -448,7 +475,7 @@ impl FlatlineApp {
     fn asleep_card(&mut self, ui: &mut Ui, area: Rect) {
         Self::state_card(
             ui,
-            area,
+            Self::card_rect(area, 344.0),
             Icon::Moon,
             MIST,
             "Your Mac is asleep",
@@ -615,11 +642,45 @@ impl FlatlineApp {
 
     // ------------------------------------------------- switcher & sheet --
 
+    /// The headphone profiles: headphones and the devices they are linked to.
+    /// Each row: (key, name, detail, linked to a device, device connected).
+    fn profiles(&self) -> Vec<(String, String, String, bool, bool)> {
+        let cat = Catalog::get();
+        let mut keys: Vec<String> = self.s.my_headphones.iter().filter(|k| cat.find(k).is_some()).cloned().collect();
+        for o in &self.s.headphone_outputs {
+            if !keys.contains(&o.headphones)
+                && (cat.find(&o.headphones).is_some() || o.headphones == CUSTOM_KEY && self.s.custom.is_some())
+            {
+                keys.push(o.headphones.clone());
+            }
+        }
+        if self.s.custom.is_some() && !keys.iter().any(|k| k == CUSTOM_KEY) {
+            keys.push(CUSTOM_KEY.to_owned());
+        }
+        keys.into_iter()
+            .map(|key| {
+                let links: Vec<&super::HeadphoneOutput> =
+                    self.s.headphone_outputs.iter().filter(|o| o.headphones == key).collect();
+                let connected = links.iter().any(|o| self.devices.iter().any(|d| d.uid == o.uid));
+                let detail = if !links.is_empty() {
+                    let names: Vec<&str> = links.iter().map(|o| o.name.as_str()).collect();
+                    format!("on {}", names.join(", "))
+                } else if let Some(e) = cat.find(&key) {
+                    format!("{} · measured by {}", e.brand, e.source)
+                } else {
+                    "Your measurement (CSV)".to_owned()
+                };
+                (key.clone(), self.headphones_name(&key), detail, !links.is_empty(), connected)
+            })
+            .collect()
+    }
+
     fn switcher(&mut self, ui: &mut Ui, hero_left: Rect) {
         let ctx = ui.ctx().clone();
         let pos = hero_left.left_top() + Vec2::new(0.0, 210.0);
         let mut pick: Option<String> = None;
         let (mut close, mut add_new) = (false, false);
+        let profiles = self.profiles();
         let resp = egui::Area::new(egui::Id::unique("switcher")).order(egui::Order::Foreground).fixed_pos(pos).show(
             &ctx,
             |ui| {
@@ -629,42 +690,49 @@ impl FlatlineApp {
                     .corner_radius(CornerRadius::same(24))
                     .inner_margin(egui::Margin::same(16))
                     .show(ui, |ui| {
-                        ui.set_width(380.0);
-                        ui.label(widgets::eyebrow("MY HEADPHONES", MIST));
+                        ui.set_width(436.0);
                         ui.add_space(4.0);
-                        let cat = Catalog::get();
-                        let mut rows: Vec<(String, String, String)> = self
-                            .s
-                            .my_headphones
-                            .iter()
-                            .filter_map(|k| cat.find(k))
-                            .map(|e| {
-                                let name = match e.variant {
-                                    Some(v) => format!("{} · {v}", e.model),
-                                    None => e.model.to_owned(),
-                                };
-                                (e.key(), name, format!("{} · measured by {}", e.brand, e.source))
-                            })
-                            .collect();
-                        if let Some(c) = &self.s.custom {
-                            rows.push((CUSTOM_KEY.to_owned(), c.name.clone(), "Your measurement (CSV)".into()));
-                        }
-                        for (key, name, detail) in rows {
-                            if headphone_row(ui, &name, &detail, key == self.s.headphone_key).clicked() {
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(widgets::eyebrow("MY HEADPHONES", MIST));
+                        });
+                        ui.add_space(6.0);
+                        for (key, name, detail, linked, connected) in profiles {
+                            let row = headphone_row(
+                                ui,
+                                &name,
+                                &detail,
+                                linked.then_some(connected),
+                                key == self.s.headphone_key,
+                            );
+                            if row.clicked() {
                                 pick = Some(key);
                             }
                         }
-                        ui.add_space(4.0);
-                        let (r, add) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::click());
+                        ui.add_space(2.0);
+                        let (sep, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+                        ui.painter()
+                            .line_segment([sep.left_center(), sep.right_center()], Stroke::new(1.0, glass_edge()));
+                        let (r, add) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 62.0), Sense::click());
                         let p = ui.painter();
                         if add.hovered() {
                             p.rect_filled(r, CornerRadius::same(14), alpha(Color32::WHITE, 0.06));
                         }
-                        let c = Pos2::new(r.left() + 26.0, r.center().y);
-                        p.circle_stroke(c, 17.0, Stroke::new(1.0, alpha(Color32::WHITE, 0.3)));
+                        let c = Pos2::new(r.left() + 30.0, r.center().y);
+                        let ring: Vec<Pos2> = (0..=48)
+                            .map(|i| {
+                                let a = i as f32 / 48.0 * std::f32::consts::TAU;
+                                c + Vec2::new(a.cos(), a.sin()) * 19.0
+                            })
+                            .collect();
+                        for s in
+                            egui::Shape::dashed_line(&ring, Stroke::new(1.0, alpha(Color32::WHITE, 0.35)), 3.0, 3.0)
+                        {
+                            p.add(s);
+                        }
                         widgets::draw_icon(p, Icon::Plus, c, 18.0, MILK);
                         p.text(
-                            Pos2::new(r.left() + 56.0, r.center().y),
+                            Pos2::new(r.left() + 64.0, r.center().y),
                             Align2::LEFT_CENTER,
                             "Add headphones…",
                             medium(15.0),
@@ -673,10 +741,23 @@ impl FlatlineApp {
                         if add.clicked() {
                             add_new = true;
                         }
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new(
+                                    "Flatline loads a profile when you switch output. Speakers are never corrected.",
+                                )
+                                .font(body(13.0))
+                                .color(MIST2),
+                            );
+                        });
+                        ui.add_space(4.0);
                     });
             },
         );
         if let Some(k) = pick {
+            // Links the profile to the output playing now (never the speakers).
             self.select_headphones(&k);
             close = true;
         }
@@ -695,9 +776,114 @@ impl FlatlineApp {
         }
     }
 
+    /// Settings: one row per device and the headphones linked to it, with
+    /// Forget.
+    fn profiles_section(&mut self, ui: &mut Ui) {
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.label(widgets::eyebrow("HEADPHONE PROFILES", MIST2));
+        ui.label(
+            RichText::new("Each profile is linked to one audio device. Flatline loads it when you use that device.")
+                .font(body(13.5))
+                .color(MIST),
+        );
+        ui.add_space(4.0);
+        let playing = self.want_uid();
+        let rows: Vec<(String, String, bool, bool)> = self
+            .s
+            .headphone_outputs
+            .iter()
+            .map(|o| {
+                let connected = self.devices.iter().any(|d| d.uid == o.uid);
+                let in_use = playing.as_deref() == Some(o.uid.as_str()) && o.headphones == self.s.headphone_key;
+                (self.headphones_name(&o.headphones), format!("Linked to {}", o.name), connected, in_use)
+            })
+            .collect();
+        let mut forget = None;
+        egui::Frame::new()
+            .fill(alpha(Color32::WHITE, 0.04))
+            .stroke(Stroke::new(1.0, glass_edge()))
+            .corner_radius(CornerRadius::same(18))
+            .inner_margin(egui::Margin::symmetric(14, 6))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if rows.is_empty() {
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(
+                            "No profile yet. Pick your headphones: Flatline links them to the device playing.",
+                        )
+                        .font(body(13.5))
+                        .color(MIST2),
+                    );
+                    ui.add_space(10.0);
+                }
+                for (i, (name, detail, connected, in_use)) in rows.into_iter().enumerate() {
+                    if i > 0 {
+                        let (sep, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+                        ui.painter()
+                            .line_segment([sep.left_center(), sep.right_center()], Stroke::new(1.0, glass_edge()));
+                    }
+                    let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
+                    // Right side: Forget, then the "In use" badge.
+                    let mut right = r.right();
+                    ui.scope_builder(
+                        UiBuilder::new()
+                            .max_rect(Rect::from_min_max(Pos2::new(r.right() - 90.0, r.top()), r.max))
+                            .layout(Layout::right_to_left(Align::Center)),
+                        |ui| {
+                            let f = widgets::tag(ui, "Forget").on_hover_text("Unlink these headphones from the device");
+                            right = f.rect.left();
+                            if f.clicked() {
+                                forget = Some(i);
+                            }
+                        },
+                    );
+                    let p = ui.painter();
+                    if in_use {
+                        let g = p.layout_no_wrap("In use".into(), medium(12.0), SOLEIL);
+                        let b = Rect::from_min_size(
+                            Pos2::new(right - 10.0 - g.size().x - 30.0, r.center().y - 13.0),
+                            Vec2::new(g.size().x + 30.0, 26.0),
+                        );
+                        p.rect_filled(b, CornerRadius::same(13), alpha(SOLEIL, 0.12));
+                        p.rect_stroke(
+                            b,
+                            CornerRadius::same(13),
+                            Stroke::new(1.0, alpha(SOLEIL, 0.45)),
+                            StrokeKind::Inside,
+                        );
+                        p.circle_filled(Pos2::new(b.left() + 12.0, b.center().y), 3.0, SOLEIL);
+                        p.galley(Pos2::new(b.left() + 20.0, b.center().y - g.size().y / 2.0), g, SOLEIL);
+                        right = b.left();
+                    }
+                    let (ink, sub) = if connected { (MILK, MIST) } else { (MIST2, alpha(MIST2, 0.8)) };
+                    let c = Pos2::new(r.left() + 20.0, r.center().y);
+                    p.circle_stroke(c, 19.0, Stroke::new(1.0, alpha(Color32::WHITE, 0.25)));
+                    widgets::draw_icon(p, Icon::Headphones, c, 18.0, ink);
+                    let x = r.left() + 54.0;
+                    let width = right - 10.0 - x;
+                    p.galley(Pos2::new(x, r.top() + 14.0), clipped(p, &name, medium(15.0), ink, width), ink);
+                    let state_w = if connected { 82.0 } else { 100.0 };
+                    let d = clipped(p, &detail, body(12.5), sub, width - state_w);
+                    let d_rect = Rect::from_min_size(Pos2::new(x, r.top() + 37.0), d.size());
+                    p.galley(d_rect.min, d, sub);
+                    link_state(p, Pos2::new(d_rect.right(), d_rect.center().y), Some(connected));
+                }
+            });
+        if let Some(i) = forget {
+            self.forget_output(i);
+        }
+        ui.label(
+            RichText::new("Forgetting a profile unlinks the device. Flatline asks again next time you use it.")
+                .font(body(12.5))
+                .color(MIST2),
+        );
+        ui.spacing_mut().item_spacing.y = 12.0;
+    }
+
     fn settings_sheet(&mut self, ui: &mut Ui, full: Rect) {
         let ctx = ui.ctx().clone();
-        let w = 400.0;
+        let w = 460.0;
         let rect =
             Rect::from_min_max(Pos2::new(full.right() - w - 16.0, full.top() + 16.0), full.max - Vec2::new(16.0, 16.0));
         egui::Area::new(egui::Id::unique("settings-sheet")).order(egui::Order::Foreground).fixed_pos(rect.min).show(
@@ -729,6 +915,8 @@ impl FlatlineApp {
         let w = ui.available_width();
         ui.spacing_mut().item_spacing.y = 12.0;
         ui.add_space(8.0);
+        self.profiles_section(ui);
+        ui.add_space(10.0);
         ui.label(widgets::eyebrow("SOUND", MIST2));
         let mut t = self.s.target;
         let rig = self.entry().map_or(profiles::TARGETS[0].name, |e| Catalog::get().target_name(e));
@@ -776,24 +964,10 @@ impl FlatlineApp {
                 }
             });
         if sel != self.s.output_uid {
-            if let Some(u) = &sel {
-                // An explicit choice is where the headphones are.
-                self.s.headphone_output = Some(u.clone());
-                self.s.headphone_output_name = self.devices.iter().find(|d| &d.uid == u).map(|d| d.name.clone());
-            }
             self.s.output_uid = sel;
             if self.s.engine_on {
                 self.start_engine();
             }
-        }
-        if let Some(name) = self.s.headphone_output_name.clone() {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("Headphones are on {name}")).font(body(13.5)).color(MIST));
-                if widgets::tag(ui, "Forget").on_hover_text("Correct whatever output the system uses").clicked() {
-                    self.s.headphone_output = None;
-                    self.s.headphone_output_name = None;
-                }
-            });
         }
         ui.label(RichText::new("Buffer (frames) · lower = less latency").font(body(13.5)).color(MIST));
         ui.horizontal_wrapped(|ui| {
@@ -903,29 +1077,41 @@ impl FlatlineApp {
                 MIST,
             );
         }
-        if let Some((msg, t)) = &self.toast {
+        if let Some((msg, t, switched)) = &self.toast {
             let age = t.elapsed().as_secs_f32();
             if age > 3.2 {
                 self.toast = None;
             } else {
                 let a = (1.0 - ((age - 2.8) / 0.4).clamp(0.0, 1.0)) * (age / 0.15).min(1.0);
                 let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("toast")));
-                let galley = p.layout_no_wrap(msg.clone(), body(15.0), alpha(MILK, a));
-                let size = galley.size() + Vec2::new(56.0, 26.0);
-                let r = Rect::from_center_size(Pos2::new(screen.center().x, screen.bottom() - 48.0), size);
+                let galley = p.layout_no_wrap(msg.clone(), medium(15.5), alpha(MILK, a));
+                let size = Vec2::new(galley.size().x + 74.0, 54.0);
+                // On the chart, between its legend and the deviation number.
+                let at = if self.onb.is_none() && self.chart_rect.is_positive() {
+                    Pos2::new(self.chart_rect.center().x, self.chart_rect.top() + 36.0)
+                } else {
+                    Pos2::new(screen.center().x, screen.bottom() - 48.0)
+                };
+                let r = Rect::from_center_size(at, size);
                 p.rect_filled(
                     r,
-                    CornerRadius::same(24),
+                    CornerRadius::same(27),
                     Color32::from_rgba_unmultiplied(30, 26, 32, (240.0 * a) as u8),
                 );
                 p.rect_stroke(
                     r,
-                    CornerRadius::same(24),
+                    CornerRadius::same(27),
                     Stroke::new(1.0, alpha(Color32::WHITE, 0.15 * a)),
                     StrokeKind::Inside,
                 );
-                p.circle_filled(Pos2::new(r.left() + 22.0, r.center().y), 4.0, alpha(SOLEIL, a));
-                p.galley(Pos2::new(r.left() + 38.0, r.center().y - galley.size().y / 2.0), galley, MILK);
+                let c = Pos2::new(r.left() + 28.0, r.center().y);
+                if *switched {
+                    p.circle_filled(c, 13.0, alpha(SOLEIL, a));
+                    widgets::draw_icon(&p, Icon::Check, c, 15.0, alpha(NIGHT, a));
+                } else {
+                    p.circle_filled(c, 4.0, alpha(SOLEIL, a));
+                }
+                p.galley(Pos2::new(r.left() + 54.0, r.center().y - galley.size().y / 2.0), galley, MILK);
                 ctx.request_repaint();
             }
         }
@@ -962,24 +1148,61 @@ pub(super) fn secondary_button(ui: &mut Ui, text: &str) -> egui::Response {
     resp
 }
 
-/// A row of the headphone switcher.
-fn headphone_row(ui: &mut Ui, name: &str, detail: &str, selected: bool) -> egui::Response {
-    let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 60.0), Sense::click());
+/// A profile row: headphones, their device (`linked`: `Some(connected)`), and
+/// a check mark when selected. Rows whose device is not connected are dimmed.
+fn headphone_row(ui: &mut Ui, name: &str, detail: &str, linked: Option<bool>, selected: bool) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 66.0), Sense::click());
     let p = ui.painter();
     if selected || resp.hovered() {
-        p.rect_filled(r, CornerRadius::same(14), alpha(Color32::WHITE, if selected { 0.09 } else { 0.05 }));
+        p.rect_filled(r, CornerRadius::same(16), alpha(Color32::WHITE, if selected { 0.09 } else { 0.05 }));
     }
-    let c = Pos2::new(r.left() + 26.0, r.center().y);
-    p.circle_stroke(c, 17.0, Stroke::new(1.0, alpha(Color32::WHITE, 0.25)));
-    widgets::draw_icon(p, Icon::Headphones, c, 18.0, MILK);
-    p.text(Pos2::new(r.left() + 56.0, r.top() + 12.0), Align2::LEFT_TOP, name, medium(15.0), MILK);
-    p.text(Pos2::new(r.left() + 56.0, r.top() + 33.0), Align2::LEFT_TOP, detail, body(12.5), MIST2);
+    let away = linked == Some(false);
+    let (ink, sub) = if away { (MIST2, alpha(MIST2, 0.8)) } else { (MILK, MIST) };
+    let c = Pos2::new(r.left() + 30.0, r.center().y);
+    p.circle_stroke(c, 19.0, Stroke::new(1.0, alpha(Color32::WHITE, 0.25)));
+    widgets::draw_icon(p, Icon::Headphones, c, 18.0, ink);
+    let x = r.left() + 64.0;
+    p.text(Pos2::new(x, r.top() + 13.0), Align2::LEFT_TOP, name, medium(15.5), ink);
+    let d = p.text(Pos2::new(x, r.top() + 36.0), Align2::LEFT_TOP, detail, body(13.0), sub);
+    link_state(p, Pos2::new(d.right(), d.center().y), linked);
     if selected {
-        let k = Pos2::new(r.right() - 22.0, r.center().y);
+        let k = Pos2::new(r.right() - 26.0, r.center().y);
         p.line(
             vec![k + Vec2::new(-6.0, 0.0), k + Vec2::new(-1.0, 5.0), k + Vec2::new(7.0, -5.0)],
             Stroke::new(2.0, SOLEIL),
         );
     }
     resp
+}
+
+/// After a device name: a green dot and "connected", or "not connected".
+fn link_state(p: &egui::Painter, at: Pos2, linked: Option<bool>) {
+    match linked {
+        Some(true) => {
+            p.circle_filled(at + Vec2::new(10.0, 0.0), 3.0, CONNECTED);
+            p.text(at + Vec2::new(18.0, 0.0), Align2::LEFT_CENTER, "connected", body(13.0), CONNECTED);
+        }
+        Some(false) => {
+            p.text(at, Align2::LEFT_CENTER, " · not connected", body(13.0), alpha(MIST2, 0.8));
+        }
+        None => {}
+    }
+}
+
+/// `text` on one line, cut with "…" to fit `width`.
+fn clipped(
+    p: &egui::Painter,
+    text: &str,
+    font: egui::FontId,
+    color: Color32,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(text.to_owned(), egui::TextFormat::simple(font, color));
+    job.wrap = egui::text::TextWrapping {
+        max_width: width.max(20.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    p.layout_job(job)
 }
