@@ -118,6 +118,7 @@ impl FlatlineApp {
             Status::Standby => ("Off · system audio untouched".to_owned(), Tone::Neutral),
             Status::Asleep => ("Paused · Mac asleep".to_owned(), Tone::Neutral),
             Status::Speakers => (format!("Speakers · {}", self.speakers_name()), Tone::Neutral),
+            Status::NoOutput => ("No output".to_owned(), Tone::Neutral),
         };
         if self.invite.is_some() && self.status != Status::Speakers {
             let banner = Rect::from_min_max(
@@ -265,6 +266,7 @@ impl FlatlineApp {
                     ("Bypass", format!("You are hearing the raw {}", short_model(&hp_name)))
                 }
                 Status::Speakers => ("No correction", "Built-in speakers".to_owned()),
+                Status::NoOutput => ("Waiting", "No audio output on this Mac".to_owned()),
                 Status::Asleep => ("Paused", "Your Mac is asleep".to_owned()),
                 Status::Blocked => ("Blocked", "macOS is not sharing system audio".to_owned()),
                 Status::Error => ("Stopped", "The audio engine could not start".to_owned()),
@@ -376,6 +378,7 @@ impl FlatlineApp {
         // State cards over the chart.
         match self.status {
             Status::Speakers => self.speakers_card(ui, rect),
+            Status::NoOutput => self.no_output_card(ui, rect),
             Status::Error => self.error_card(ui, rect),
             Status::Asleep => self.asleep_card(ui, rect),
             _ => {}
@@ -426,17 +429,32 @@ impl FlatlineApp {
             MIST,
             "Speakers aren’t corrected",
             "Flatline corrects headphones. Connect a pair and its profile loads on its own.",
-            |ui| {
-                ui.horizontal(|ui| {
-                    let text = ui.painter().layout_no_wrap("Listening for headphones…".into(), body(14.5), MILK);
-                    ui.add_space((ui.available_width() - text.size().x - 14.0) / 2.0);
-                    let (r, _) = ui.allocate_exact_size(Vec2::new(14.0 + text.size().x, 20.0), Sense::hover());
-                    let p = ui.painter();
-                    p.circle_filled(Pos2::new(r.left() + 4.0, r.center().y), 3.5, MILK);
-                    p.galley(Pos2::new(r.left() + 14.0, r.center().y - text.size().y / 2.0), text, MILK);
-                });
-            },
+            |ui| Self::listening(ui, "Listening for headphones…"),
         );
+    }
+
+    fn no_output_card(&mut self, ui: &mut Ui, area: Rect) {
+        Self::state_card(
+            ui,
+            Self::card_rect(area, 290.0),
+            Icon::Headphones,
+            MIST,
+            "No audio output",
+            "Your Mac has no output to play on. Connect headphones and Flatline starts on its own.",
+            |ui| Self::listening(ui, "Listening for an output…"),
+        );
+    }
+
+    /// A centred "listening" line with a dot, for the waiting cards.
+    fn listening(ui: &mut Ui, label: &str) {
+        ui.horizontal(|ui| {
+            let text = ui.painter().layout_no_wrap(label.into(), body(14.5), MILK);
+            ui.add_space((ui.available_width() - text.size().x - 14.0) / 2.0);
+            let (r, _) = ui.allocate_exact_size(Vec2::new(14.0 + text.size().x, 20.0), Sense::hover());
+            let p = ui.painter();
+            p.circle_filled(Pos2::new(r.left() + 4.0, r.center().y), 3.5, MILK);
+            p.galley(Pos2::new(r.left() + 14.0, r.center().y - text.size().y / 2.0), text, MILK);
+        });
     }
 
     fn error_card(&mut self, ui: &mut Ui, area: Rect) {
