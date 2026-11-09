@@ -204,16 +204,21 @@ impl FlatlineApp {
             None => "NOW CALIBRATING".to_owned(),
         };
         ui.label(widgets::eyebrow(&eyebrow, MIST));
-        // Fit the title to the column.
+        // Fit the title to the column, as in the mockups: the first line may
+        // use the whole width, the last one leaves room for the switcher
+        // (chevron + "Change").
         let width = ui.available_width();
-        let mut size: f32 = 80.0;
-        for line in [Some(&l1), l2.as_ref()].into_iter().flatten() {
+        let switcher_w = 140.0;
+        let last = if l2.is_some() { 1 } else { 0 };
+        let mut size: f32 = 120.0;
+        for (k, line) in [Some(&l1), l2.as_ref()].into_iter().flatten().enumerate() {
+            let room = if k == last { width - switcher_w } else { width };
             let g = ui.painter().layout_job(widgets::tight(line, display(size), MILK, -0.045));
-            if g.size().x > width - 110.0 {
-                size *= (width - 110.0) / g.size().x;
+            if g.size().x > room {
+                size *= room / g.size().x;
             }
         }
-        let size = size.clamp(36.0, 80.0);
+        let size = size.clamp(36.0, 120.0);
         ui.spacing_mut().item_spacing.y = 0.0;
         if l2.is_none() {
             self.title_line(ui, &l1, size, true);
@@ -221,7 +226,7 @@ impl FlatlineApp {
             self.title_line(ui, &l1, size, false);
             self.title_line(ui, l2.as_deref().unwrap_or_default(), size, true);
         }
-        ui.add_space(14.0);
+        ui.add_space(24.0);
         ui.spacing_mut().item_spacing.y = 14.0;
         let mut sub = format!("Tuned to {} · {} bands", self.target_name(), self.s.params.n_filters);
         if let Some(v) = variant {
