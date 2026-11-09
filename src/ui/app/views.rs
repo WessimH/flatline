@@ -107,8 +107,8 @@ impl FlatlineApp {
                 widgets::logo(ui, 25.0);
             },
         );
-        let device = self.engine.as_ref().map(|e| e.info.device.name.clone()).unwrap_or_default();
-        let rate = self.engine.as_ref().map_or(0.0, |e| e.info.sample_rate / 1000.0);
+        let device = self.engine_device().map(|d| d.name.clone()).unwrap_or_default();
+        let rate = self.fs() / 1000.0;
         let (text, tone) = match self.status {
             Status::Live if self.s.enabled => (format!("Live · {device} · {rate:.0} kHz"), Tone::Live),
             Status::Live => (format!("Bypass · {device} · {rate:.0} kHz"), Tone::Neutral),

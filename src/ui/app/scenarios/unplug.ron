@@ -1,0 +1,20 @@
+// FLA-1: the headphones' interface is unplugged while correcting (macOS falls
+// back to the speakers), then plugged back in.
+(
+    settings: Some((
+        onboarded: true,
+        version: 6,
+        headphone_outputs: [
+            (uid: "AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1", name: "Scarlett Solo USB", headphones: "oratory1990/Beyerdynamic DT 770 Pro"),
+        ],
+    )),
+    devices: [
+        ("BuiltInSpeakerDevice", "MacBook Pro Speakers"),
+        ("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1", "Scarlett Solo USB"),
+    ],
+    default: Some("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1"),
+    steps: [
+        (at: 3, events: [Remove("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1"), Default(Some("BuiltInSpeakerDevice"))]),
+        (at: 6, events: [Add("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1", "Scarlett Solo USB"), Default(Some("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1"))]),
+    ],
+)

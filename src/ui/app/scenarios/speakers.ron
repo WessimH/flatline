@@ -1,0 +1,19 @@
+// FLA-22: the Mac plays on its built-in speakers: no correction, even with
+// a profile for them.
+(
+    settings: Some((
+        onboarded: true,
+        version: 6,
+        headphone_outputs: [
+            (uid: "AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1", name: "Scarlett Solo USB", headphones: "oratory1990/Beyerdynamic DT 770 Pro"),
+        ],
+    )),
+    devices: [
+        ("BuiltInSpeakerDevice", "MacBook Pro Speakers"),
+        ("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1", "Scarlett Solo USB"),
+    ],
+    default: Some("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1"),
+    steps: [
+        (at: 3, events: [Default(Some("BuiltInSpeakerDevice"))]),
+    ],
+)
