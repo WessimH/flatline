@@ -41,7 +41,7 @@ const START_GRACE: Duration = Duration::from_secs(8);
 fn retry_delay(retries: u32) -> Duration {
     Duration::from_secs((10u64 << retries.min(3)).min(60))
 }
-const SETTINGS_VERSION: u32 = 4;
+const SETTINGS_VERSION: u32 = 5;
 const BUFFER_SIZES: [u32; 5] = [64, 128, 256, 512, 1024];
 const SETTINGS_URL: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 
@@ -54,6 +54,15 @@ pub struct CustomCurve {
     pub name: String,
     /// Raw CSV text.
     pub csv: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// An output the headphones are used on.
+pub struct HeadphoneOutput {
+    /// CoreAudio device UID.
+    pub uid: String,
+    /// Display name.
+    pub name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -93,12 +102,17 @@ pub struct Settings {
     pub custom: Option<CustomCurve>,
     /// Visible layers of the frequency-response graph.
     pub layers: Layers,
-    /// UID of the output the headphones are plugged into (learned the first
-    /// time Flatline runs on a non-speaker output, or chosen in Settings).
-    /// When the system output is anything else, the correction pauses.
-    pub headphone_output: Option<String>,
-    /// Display name of [`Settings::headphone_output`].
-    pub headphone_output_name: Option<String>,
+    /// The outputs the headphones are used on (learned when Flatline runs on
+    /// a wired output, or chosen in Settings). When the system plays on any
+    /// other output, the correction pauses. Empty = correct every output.
+    pub headphone_outputs: Vec<HeadphoneOutput>,
+    /// Settings v4: UID of the single headphone output. Read once, migrated
+    /// to [`Settings::headphone_outputs`], never written.
+    #[serde(rename = "headphone_output", skip_serializing)]
+    pub legacy_headphone_output: Option<String>,
+    /// Settings v4: display name of [`Settings::legacy_headphone_output`].
+    #[serde(rename = "headphone_output_name", skip_serializing)]
+    pub legacy_headphone_output_name: Option<String>,
     /// Field-level default (0) so files from older builds get migrated.
     #[serde(default)]
     pub version: u32,
@@ -128,16 +142,30 @@ impl Default for Settings {
             engine_on: true,
             custom: None,
             layers: Layers::default(),
-            headphone_output: None,
-            headphone_output_name: None,
+            headphone_outputs: Vec::new(),
+            legacy_headphone_output: None,
+            legacy_headphone_output_name: None,
             version: SETTINGS_VERSION,
         }
     }
 }
 
-/// What the correction does, given the output the headphones are on (`hp`,
-/// `None` = not known yet), the output audio goes to (`want`), whether the
-/// headphones' output is connected, and whether it is paused already.
+impl Settings {
+    /// Adds an output to [`Settings::headphone_outputs`] unless it is listed
+    /// already. Returns true when it was added.
+    pub fn remember_output(&mut self, uid: &str, name: &str) -> bool {
+        if self.headphone_outputs.iter().any(|o| o.uid == uid) {
+            return false;
+        }
+        self.headphone_outputs.push(HeadphoneOutput { uid: uid.into(), name: name.into() });
+        true
+    }
+}
+
+/// What the correction does, given the UIDs of the outputs the headphones are
+/// used on (`hp`, empty = none known yet), the output audio goes to (`want`),
+/// the UIDs of the connected outputs (`present`), and whether it is paused
+/// already.
 #[derive(Debug, PartialEq)]
 enum Route {
     /// Keep correcting (or keep the current state).
@@ -148,13 +176,14 @@ enum Route {
     Resume,
 }
 
-fn route_decision(hp: Option<&str>, want: Option<&str>, hp_present: bool, paused: bool) -> Route {
-    match hp {
-        Some(h) if want != Some(h) => {
-            Route::Pause(if hp_present { Status::OutputChanged } else { Status::Disconnected })
-        }
-        _ if paused => Route::Resume,
-        _ => Route::Run,
+fn route_decision(hp: &[&str], want: Option<&str>, present: &[&str], paused: bool) -> Route {
+    if !hp.is_empty() && !want.is_some_and(|w| hp.contains(&w)) {
+        let hp_present = hp.iter().any(|h| present.contains(h));
+        Route::Pause(if hp_present { Status::OutputChanged } else { Status::Disconnected })
+    } else if paused {
+        Route::Resume
+    } else {
+        Route::Run
     }
 }
 
@@ -176,6 +205,13 @@ fn migrate(s: &mut Settings) {
         // The old "Harman" preset (6.5 dB) becomes AutoEq's 6 dB.
         if (s.params.bass_db - 6.5).abs() < 1e-9 {
             s.params.bass_db = 6.0;
+        }
+    }
+    if s.version < 5 {
+        // v5: a list of headphone outputs replaces the single one.
+        let name = s.legacy_headphone_output_name.take();
+        if let Some(uid) = s.legacy_headphone_output.take() {
+            s.remember_output(&uid, &name.unwrap_or_else(|| uid.clone()));
         }
     }
     s.version = s.version.max(SETTINGS_VERSION);
@@ -377,8 +413,8 @@ pub struct FlatlineApp {
     switcher_open: bool,
     /// The disconnected / output-changed card was dismissed by the user.
     pause_card_dismissed: bool,
-    /// Name of the output the system is using while paused.
-    current_output_name: String,
+    /// The output the system is using while paused.
+    current_output: Option<Device>,
     /// The switcher was drawn last frame (outside-click handling).
     switcher_shown: bool,
     /// Smoothed level bars for the Output card.
@@ -468,7 +504,7 @@ impl FlatlineApp {
             settings_open: false,
             switcher_open: false,
             pause_card_dismissed: false,
-            current_output_name: String::new(),
+            current_output: None,
             switcher_shown: false,
             bar_levels: vec![0.0; 24],
             last_clip_toast: None,
@@ -527,6 +563,20 @@ impl FlatlineApp {
             (None, Some(c)) => (c.clone(), profiles::TARGETS[usize::from(optimum)].curve()),
             (None, None) => (profiles::HEADPHONES[0].curve(), profiles::TARGETS[0].curve()),
         }
+    }
+
+    /// Name of the output the headphones are used on, or "your headphones"
+    /// when there are none or several.
+    fn headphone_output_label(&self) -> String {
+        match self.s.headphone_outputs.as_slice() {
+            [one] => one.name.clone(),
+            _ => "your headphones".into(),
+        }
+    }
+
+    /// Name of the output the system is using while paused ("" if unknown).
+    fn current_output_name(&self) -> String {
+        self.current_output.as_ref().map_or_else(String::new, |d| d.name.clone())
     }
 
     /// Display name of the selected headphones, e.g. `DT 770 Pro · Worn pads`.
@@ -633,23 +683,21 @@ impl FlatlineApp {
         let want =
             self.s.output_uid.clone().filter(|u| self.devices.iter().any(|d| &d.uid == u)).or(self.default_uid.clone());
         let paused = matches!(self.status, Status::Disconnected | Status::OutputChanged);
-        // Learn where the headphones are the first time we run live on
-        // something other than the built-in speakers.
-        if self.s.headphone_output.is_none()
-            && self.status == Status::Live
+        // Learn the wired outputs the headphones are used on (never the
+        // built-in speakers, Bluetooth or HDMI).
+        if self.status == Status::Live
             && let Some(e) = &self.engine
-            && !e.info.device.uid.contains("BuiltInSpeaker")
+            && e.info.device.wired
+            && self.s.remember_output(&e.info.device.uid, &e.info.device.name)
         {
             crate::log::log(format!("headphones are on {} ({})", e.info.device.name, e.info.device.uid));
-            self.s.headphone_output = Some(e.info.device.uid.clone());
-            self.s.headphone_output_name = Some(e.info.device.name.clone());
         }
         if !self.s.engine_on || self.power.is_sleeping() {
             return false;
         }
-        let hp = self.s.headphone_output.as_deref();
-        let present = hp.is_some_and(|h| self.devices.iter().any(|d| d.uid == h));
-        match route_decision(hp, want.as_deref(), present, paused) {
+        let hp: Vec<&str> = self.s.headphone_outputs.iter().map(|o| o.uid.as_str()).collect();
+        let present: Vec<&str> = self.devices.iter().map(|d| d.uid.as_str()).collect();
+        match route_decision(&hp, want.as_deref(), &present, paused) {
             Route::Run => false,
             Route::Resume => {
                 crate::log::log("headphones are back: resuming");
@@ -666,10 +714,9 @@ impl FlatlineApp {
 
     /// Stops the engine because the system output is not the headphones'.
     fn pause(&mut self, next: Status, want: Option<&str>, was_paused: bool) {
-        self.current_output_name =
-            want.and_then(|u| self.devices.iter().find(|d| d.uid == u)).map_or_else(String::new, |d| d.name.clone());
+        self.current_output = want.and_then(|u| self.devices.iter().find(|d| d.uid == u)).cloned();
         if self.status != next || self.engine.is_some() {
-            crate::log::log(format!("correction paused: {next:?} (system output: {})", self.current_output_name));
+            crate::log::log(format!("correction paused: {next:?} (system output: {})", self.current_output_name()));
             if !was_paused {
                 self.pause_card_dismissed = false;
             }
@@ -718,7 +765,7 @@ impl FlatlineApp {
             Status::Standby => "Standby (system audio untouched)".into(),
             Status::Asleep => "Paused · Mac asleep".into(),
             Status::Disconnected => "Paused · headphones disconnected".into(),
-            Status::OutputChanged => format!("Paused · output is {}", self.current_output_name),
+            Status::OutputChanged => format!("Paused · output is {}", self.current_output_name()),
         }
     }
 
@@ -759,15 +806,24 @@ impl FlatlineApp {
             app.engine = None;
             app.status = st;
         };
-        self.s.headphone_output_name.get_or_insert_with(|| "Scarlett Solo USB".into());
+        if self.s.headphone_outputs.is_empty() {
+            self.s.remember_output("demo-scarlett", "Scarlett Solo USB");
+            self.s.remember_output("BuiltInHeadphoneOutputDevice", "MacBook Pro Headphones");
+        }
         match f.as_str() {
             "bypass" => self.s.enabled = false,
             "disconnected" => {
-                self.current_output_name = "MacBook Pro Speakers".into();
+                self.current_output = Some(Device {
+                    id: 0,
+                    uid: "demo-usb-c-adapter".into(),
+                    name: "USB-C to 3.5mm Adapter".into(),
+                    wired: true,
+                });
                 paused(self, Status::Disconnected);
             }
             "changed" => {
-                self.current_output_name = "AirPods Pro".into();
+                self.current_output =
+                    Some(Device { id: 0, uid: "demo-airpods".into(), name: "AirPods Pro".into(), wired: false });
                 paused(self, Status::OutputChanged);
             }
             "blocked" => paused(self, Status::Blocked),
@@ -1097,19 +1153,75 @@ mod tests {
 
     #[test]
     fn correction_follows_the_headphones() {
-        let (hp, spk, air) = ("Scarlett", "BuiltInSpeakerDevice", "AirPods");
-        // Not learned yet: correct whatever plays.
-        assert_eq!(route_decision(None, Some(spk), false, false), Route::Run);
-        // On the headphones' output.
-        assert_eq!(route_decision(Some(hp), Some(hp), true, false), Route::Run);
-        // Unplugged: macOS falls back to the speakers.
-        assert_eq!(route_decision(Some(hp), Some(spk), false, false), Route::Pause(Status::Disconnected));
-        // Still plugged, but the system switched to AirPods.
-        assert_eq!(route_decision(Some(hp), Some(air), true, false), Route::Pause(Status::OutputChanged));
-        // Plugged back in and selected again.
-        assert_eq!(route_decision(Some(hp), Some(hp), true, true), Route::Resume);
-        // "Forget" while paused.
-        assert_eq!(route_decision(None, Some(spk), false, true), Route::Resume);
+        let (usb, jack, spk, air) = ("Scarlett", "BuiltInHeadphoneOutputDevice", "BuiltInSpeakerDevice", "AirPods");
+        let both = [usb, jack];
+        // Nothing learned yet: correct whatever plays.
+        assert_eq!(route_decision(&[], Some(spk), &[spk], false), Route::Run);
+        assert_eq!(route_decision(&[], Some(air), &[spk, air], false), Route::Run);
+        // Both outputs learned: correct on either.
+        assert_eq!(route_decision(&both, Some(usb), &[usb, jack, spk], false), Route::Run);
+        assert_eq!(route_decision(&both, Some(jack), &[usb, jack, spk], false), Route::Run);
+        // Scarlett unplugged, headphones on the jack.
+        assert_eq!(route_decision(&both, Some(jack), &[jack, spk], false), Route::Run);
+        // Every learned output gone: macOS falls back to the speakers.
+        assert_eq!(route_decision(&both, Some(spk), &[spk], false), Route::Pause(Status::Disconnected));
+        // A learned output is still there, but the system switched to AirPods.
+        assert_eq!(route_decision(&both, Some(air), &[usb, spk, air], false), Route::Pause(Status::OutputChanged));
+        assert_eq!(route_decision(&[usb], Some(air), &[usb, air], true), Route::Pause(Status::OutputChanged));
+        // Back on a learned output.
+        assert_eq!(route_decision(&both, Some(jack), &[jack, spk], true), Route::Resume);
+        // Scarlett unplugged, headphones on a jack never used: paused until
+        // "My headphones are plugged in here" adds the jack.
+        assert_eq!(route_decision(&[usb], Some(jack), &[jack, spk], false), Route::Pause(Status::Disconnected));
+        assert_eq!(route_decision(&both, Some(jack), &[jack, spk], true), Route::Resume);
+        // "Forget" the last output while paused.
+        assert_eq!(route_decision(&[], Some(spk), &[spk], true), Route::Resume);
+    }
+
+    #[test]
+    fn outputs_are_remembered_once() {
+        let mut s = Settings::default();
+        assert!(s.remember_output("Scarlett", "Scarlett Solo USB"));
+        assert!(s.remember_output("Jack", "MacBook Pro Headphones"));
+        assert!(!s.remember_output("Scarlett", "Scarlett Solo USB"));
+        let uids: Vec<&str> = s.headphone_outputs.iter().map(|o| o.uid.as_str()).collect();
+        assert_eq!(uids, ["Scarlett", "Jack"]);
+    }
+
+    /// A real settings file written by v4, with and without a headphone output.
+    #[test]
+    fn real_v4_file_moves_the_output_to_the_list() {
+        let v4 = |out: &str| {
+            format!(
+                "(headphone_key:\"oratory1990/Beyerdynamic DT 770 Pro\",my_headphones:[],onboarded:true,target:0,\
+                 params:(bass_db:6.0,tilt_db_oct:0.0,max_boost_db:8.0,n_filters:10),amount:0.8,enabled:true,\
+                 level_match:true,output_uid:None,buffer_frames:128,engine_on:true,custom:None,\
+                 layers:(measured:true,target:true,eq:true,result:false,rta:false),{out}version:4)"
+            )
+        };
+        let with = v4("headphone_output:Some(\"AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1\"),\
+                       headphone_output_name:Some(\"Scarlett Solo USB\"),");
+        let mut s: Settings = ron::from_str(&with).expect("v4 settings parse");
+        migrate(&mut s);
+        assert_eq!(
+            s.headphone_outputs,
+            [HeadphoneOutput {
+                uid: "AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1".into(),
+                name: "Scarlett Solo USB".into()
+            }]
+        );
+        assert_eq!((s.amount, s.version), (0.8, SETTINGS_VERSION));
+        // Round trip: the legacy fields are never written back.
+        let saved = ron::to_string(&s).expect("serialize");
+        assert!(!saved.contains("headphone_output:"), "{saved}");
+        let back: Settings = ron::from_str(&saved).expect("v5 settings parse");
+        assert_eq!(back, s);
+
+        let without = v4("headphone_output:None,headphone_output_name:None,");
+        let mut s: Settings = ron::from_str(&without).expect("v4 settings parse");
+        migrate(&mut s);
+        assert!(s.headphone_outputs.is_empty());
+        assert_eq!(s.amount, 0.8);
     }
 
     /// A real settings file written by v3 (the bug: it failed to load).

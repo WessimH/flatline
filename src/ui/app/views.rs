@@ -108,7 +108,7 @@ impl FlatlineApp {
         );
         let device = self.engine.as_ref().map(|e| e.info.device.name.clone()).unwrap_or_default();
         let rate = self.engine.as_ref().map_or(0.0, |e| e.info.sample_rate / 1000.0);
-        let hp_out = self.s.headphone_output_name.clone().unwrap_or_else(|| "your headphones".into());
+        let hp_out = self.headphone_output_label();
         let (text, tone) = match self.status {
             Status::Live if self.s.enabled => (format!("Live · {device} · {rate:.0} kHz"), Tone::Live),
             Status::Live => (format!("Bypass · {device} · {rate:.0} kHz"), Tone::Neutral),
@@ -118,7 +118,7 @@ impl FlatlineApp {
             Status::Standby => ("Off · system audio untouched".to_owned(), Tone::Neutral),
             Status::Asleep => ("Paused · Mac asleep".to_owned(), Tone::Neutral),
             Status::Disconnected => (format!("Disconnected · {hp_out}"), Tone::Warning),
-            Status::OutputChanged => (format!("Paused · output is {}", self.current_output_name), Tone::Warning),
+            Status::OutputChanged => (format!("Paused · output is {}", self.current_output_name()), Tone::Warning),
         };
         let pill_w = ui.painter().layout_no_wrap(text.clone(), body(14.0), MILK).size().x + 50.0;
         let pill = Rect::from_center_size(Pos2::new(rect.center().x, rect.center().y), Vec2::new(pill_w, 40.0));
@@ -199,7 +199,7 @@ impl FlatlineApp {
                 self.s.enabled = !self.s.enabled;
             }
             let hp_name = self.headphone_name();
-            let hp_out = self.s.headphone_output_name.clone().unwrap_or_else(|| "your headphones".into());
+            let hp_out = self.headphone_output_label();
             let (t, sub) = match self.status {
                 Status::Live | Status::Starting if self.s.enabled => {
                     ("Correction on", "Press Space to hear the difference".to_owned())
@@ -208,7 +208,7 @@ impl FlatlineApp {
                     ("Bypass", format!("You are hearing the raw {}", short_model(&hp_name)))
                 }
                 Status::Disconnected => ("Paused", format!("Waiting for {hp_out}")),
-                Status::OutputChanged => ("Paused", format!("Output is {}", self.current_output_name)),
+                Status::OutputChanged => ("Paused", format!("Output is {}", self.current_output_name())),
                 Status::Asleep => ("Paused", "Your Mac is asleep".to_owned()),
                 Status::Blocked => ("Blocked", "macOS is not sharing system audio".to_owned()),
                 Status::Error => ("Stopped", "The audio engine could not start".to_owned()),
@@ -337,7 +337,7 @@ impl FlatlineApp {
     ) {
         // Centred in the plot, below the chart header and legend.
         let plot = Rect::from_min_max(area.min + Vec2::new(0.0, 92.0), area.max);
-        let card = Rect::from_center_size(plot.center(), Vec2::new((area.width() - 120.0).min(540.0), 320.0));
+        let card = Rect::from_center_size(plot.center(), Vec2::new((area.width() - 120.0).min(540.0), 344.0));
         let p = ui.painter();
         p.rect_filled(card, CornerRadius::same(28), Color32::from_rgba_unmultiplied(26, 22, 28, 238));
         p.rect_stroke(card, CornerRadius::same(28), Stroke::new(1.0, alpha(color, 0.35)), StrokeKind::Inside);
@@ -359,9 +359,10 @@ impl FlatlineApp {
     }
 
     fn disconnected_card(&mut self, ui: &mut Ui, area: Rect) {
-        let hp = self.s.headphone_output_name.clone().unwrap_or_else(|| "your headphones".into());
-        let now = self.current_output_name.clone();
-        let mut dismiss = false;
+        let hp = self.headphone_output_label();
+        let now = self.current_output_name();
+        let wired = self.current_output.as_ref().filter(|d| d.wired).map(|d| d.uid.clone());
+        let (mut dismiss, mut here) = (false, false);
         Self::state_card(
             ui,
             area,
@@ -370,11 +371,18 @@ impl FlatlineApp {
             "Your headphones are disconnected",
             &format!("Correction is paused. Plug {hp} back in and Flatline resumes on its own."),
             |ui| {
+                if wired.is_some() {
+                    here = primary_button(ui, "My headphones are plugged in here").clicked();
+                }
                 if !now.is_empty() && secondary_button(ui, &format!("Use {now} without correction")).clicked() {
                     dismiss = true;
                 }
             },
         );
+        if here && let Some(uid) = wired {
+            // route() sees a known output again and resumes.
+            self.s.remember_output(&uid, &now);
+        }
         if dismiss {
             self.pause_card_dismissed = true;
         }
@@ -382,7 +390,7 @@ impl FlatlineApp {
 
     fn output_changed_card(&mut self, ui: &mut Ui, area: Rect) {
         let name = self.headphone_name();
-        let now = self.current_output_name.clone();
+        let now = self.current_output_name();
         let (mut switch, mut keep, mut use_here) = (false, false, false);
         Self::state_card(
             ui,
@@ -402,10 +410,9 @@ impl FlatlineApp {
         if switch {
             self.switcher_open = true;
         }
-        if use_here {
-            // Adopt the new output as the headphones' output.
-            self.s.headphone_output = self.default_uid.clone();
-            self.s.headphone_output_name = Some(now);
+        if use_here && let Some(uid) = self.default_uid.clone() {
+            // The headphones are on this output too.
+            self.s.remember_output(&uid, &now);
         }
         if keep {
             self.pause_card_dismissed = true;
@@ -776,24 +783,27 @@ impl FlatlineApp {
                 }
             });
         if sel != self.s.output_uid {
-            if let Some(u) = &sel {
-                // An explicit choice is where the headphones are.
-                self.s.headphone_output = Some(u.clone());
-                self.s.headphone_output_name = self.devices.iter().find(|d| &d.uid == u).map(|d| d.name.clone());
+            if let Some(d) = sel.as_ref().and_then(|u| self.devices.iter().find(|d| &d.uid == u)) {
+                // An explicit choice is an output the headphones are on.
+                self.s.remember_output(&d.uid, &d.name);
             }
             self.s.output_uid = sel;
             if self.s.engine_on {
                 self.start_engine();
             }
         }
-        if let Some(name) = self.s.headphone_output_name.clone() {
+        let mut forget = None;
+        for (i, o) in self.s.headphone_outputs.iter().enumerate() {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("Headphones are on {name}")).font(body(13.5)).color(MIST));
-                if widgets::tag(ui, "Forget").on_hover_text("Correct whatever output the system uses").clicked() {
-                    self.s.headphone_output = None;
-                    self.s.headphone_output_name = None;
+                ui.label(RichText::new(format!("Headphones on {}", o.name)).font(body(13.5)).color(MIST));
+                if widgets::tag(ui, "Forget").on_hover_text("Remove this output from the headphones' outputs").clicked()
+                {
+                    forget = Some(i);
                 }
             });
+        }
+        if let Some(i) = forget {
+            self.s.headphone_outputs.remove(i);
         }
         ui.label(RichText::new("Buffer (frames) · lower = less latency").font(body(13.5)).color(MIST));
         ui.horizontal_wrapped(|ui| {
