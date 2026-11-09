@@ -1,0 +1,6 @@
+// FLA-24: the Mac has outputs but no default output: a neutral "no output"
+// state, not the engine error card.
+(
+    devices: [("BuiltInSpeakerDevice", "MacBook Pro Speakers")],
+    default: None,
+)

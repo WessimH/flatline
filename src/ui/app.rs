@@ -380,6 +380,8 @@ enum Status {
     Asleep,
     /// The system plays on the built-in speakers: no correction.
     Speakers,
+    /// The Mac has no output to play on: nothing to correct until one appears.
+    NoOutput,
 }
 
 // ---------------------------------------------------------------- app ----
@@ -422,6 +424,8 @@ pub struct FlatlineApp {
     demo: bool,
     /// Consecutive restarts that came up blocked (drives the tap fallback).
     blocked_retries: u32,
+    /// Retries of an engine that failed to start (spaces them out).
+    error_retries: u32,
     /// Whether the current engine has delivered non-silent audio yet.
     signal_seen: bool,
     tray: Option<Tray>,
@@ -567,6 +571,7 @@ impl FlatlineApp {
             toast: None,
             demo,
             blocked_retries: 0,
+            error_retries: 0,
             signal_seen: false,
             shot,
             hidden: background && tray.is_some(),
@@ -749,6 +754,12 @@ impl FlatlineApp {
     fn start_engine(&mut self) {
         self.engine = None; // tear down the previous tap/aggregate first
         self.last_restart = self.now;
+        if self.want_uid().is_none() {
+            self.drop_engine();
+            crate::log::log("no output device: waiting for one");
+            self.status = Status::NoOutput;
+            return;
+        }
         let started = if let Some(sim) = &mut self.sim {
             // Fake engine: plays on the chosen output if connected, else on
             // the default one, like the real one.
@@ -837,6 +848,14 @@ impl FlatlineApp {
             self.invite = None;
         }
         let paused = self.status == Status::Speakers;
+        let no_output = self.status == Status::NoOutput;
+        // Standby here: first-run setup, the engine waits for "Allow access".
+        if want.is_none() {
+            if !no_output && self.status != Status::Standby {
+                self.start_engine(); // stops it and shows "no output"
+            }
+            return true;
+        }
         match route_decision(want.as_deref(), changed, &self.s.headphone_outputs, &self.s.headphone_key) {
             Route::Pause => {
                 if !paused || self.engine_device().is_some() {
@@ -861,6 +880,12 @@ impl FlatlineApp {
         }
         if paused {
             crate::log::log("left the built-in speakers: resuming");
+            self.start_engine();
+        } else if no_output {
+            crate::log::log("restarting engine: an output is available");
+            self.start_engine();
+        } else if changed && self.status == Status::Error {
+            crate::log::log(format!("restarting engine: output changed to {}", want.as_deref().unwrap_or("?")));
             self.start_engine();
         }
         false
@@ -906,6 +931,7 @@ impl FlatlineApp {
             Status::Standby => "Standby (system audio untouched)".into(),
             Status::Asleep => "Paused · Mac asleep".into(),
             Status::Speakers => "Paused · speakers aren't corrected".into(),
+            Status::NoOutput => "Paused · no audio output".into(),
         }
     }
 
@@ -1043,6 +1069,7 @@ impl FlatlineApp {
                 self.cb_seen = (cb, now);
                 self.status = Status::Live;
                 self.blocked_retries = 0;
+                self.error_retries = 0;
             } else if self.status == Status::Live && now - self.cb_seen.1 > Duration::from_millis(1500) {
                 // Was running, then stopped (device gone, coreaudiod restart…).
                 self.status = Status::Blocked;
@@ -1083,6 +1110,13 @@ impl FlatlineApp {
                 crate::log::log(format!("restarting engine: {why}"));
                 self.start_engine();
             }
+        } else if self.status == Status::Error
+            && self.forced.is_none()
+            && now - self.last_restart > retry_delay(self.error_retries)
+        {
+            self.error_retries += 1;
+            crate::log::log(format!("restarting engine: still failing (retry {})", self.error_retries));
+            self.start_engine();
         }
     }
 

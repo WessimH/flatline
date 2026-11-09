@@ -259,10 +259,50 @@ mod tests {
     }
 
     #[test]
-    fn no_output_is_an_engine_error_not_a_crash() {
-        let seen = replay("()");
-        assert_eq!(seen[0].status, Status::Error);
-        assert!(has(&seen[0].log, "engine failed to start: no default output device (simulated)"));
+    fn no_output_is_a_neutral_state_not_an_error() {
+        for text in ["()", include_str!("scenarios/no-output.ron")] {
+            let seen = replay(text);
+            assert_eq!(seen[0].status, Status::NoOutput, "{:?}", seen[0].log);
+            assert!(has(&seen[0].log, "no output device: waiting for one"), "{:?}", seen[0].log);
+            assert!(!has(&seen[0].log, "engine failed"), "{:?}", seen[0].log);
+        }
+    }
+
+    #[test]
+    fn an_output_appearing_starts_the_engine() {
+        let seen = replay(include_str!("scenarios/output-appears.ron"));
+        assert_eq!(seen[1].status, Status::Live, "{:?}", seen[1].log);
+        assert_eq!(seen[1].headphones, DEFAULT_KEY);
+        assert!(has(&seen[1].log, "restarting engine: an output is available"), "{:?}", seen[1].log);
+        let second = "AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:2";
+        assert_eq!((seen[3].status, seen[3].invite.as_deref()), (Status::Live, Some(second)));
+    }
+
+    #[test]
+    fn an_engine_error_is_retried_spaced_out() {
+        let t0 = Instant::now();
+        let sc = Scenario::parse(include_str!("scenarios/speakers.ron")).unwrap();
+        let (s, sim) = Sim::new(Scenario { steps: Vec::new(), ..sc }, t0);
+        let ctx = egui::Context::default();
+        let mut app = FlatlineApp::build(&ctx, s, true, Some(sim), None, Default::default(), t0);
+        app.poll(t0);
+        assert_eq!(app.status, Status::Live);
+        // The engine failed to start (e.g. the output is hogged).
+        app.drop_engine();
+        app.status = Status::Error;
+        crate::log::take_captured();
+        let mut retries = Vec::new();
+        for i in 1..=4 * 80 {
+            let t = Duration::from_millis(250 * i);
+            app.poll(t0 + t);
+            if crate::log::take_captured().iter().any(|l| l.contains("restarting engine: still failing")) {
+                retries.push(t.as_secs());
+                app.drop_engine();
+                app.status = Status::Error;
+            }
+        }
+        // 10 s after the failure, then 20 s after the first retry, …
+        assert_eq!(retries, [10, 30, 70]);
     }
 
     #[test]

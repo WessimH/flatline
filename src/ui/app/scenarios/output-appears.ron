@@ -1,0 +1,24 @@
+// FLA-25: no default output at launch. A known output becomes the default:
+// the engine starts on its own with its profile. It goes away (no output
+// again), then a new output with the same name becomes the default: the
+// engine starts and the "New output" banner asks.
+(
+    settings: Some((
+        onboarded: true,
+        version: 6,
+        headphone_outputs: [
+            (uid: "AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1", name: "Scarlett Solo USB", headphones: "oratory1990/Beyerdynamic DT 770 Pro"),
+        ],
+    )),
+    devices: [
+        ("BuiltInSpeakerDevice", "MacBook Pro Speakers"),
+        ("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1", "Scarlett Solo USB"),
+        ("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:2", "Scarlett Solo USB"),
+    ],
+    default: None,
+    steps: [
+        (at: 3, events: [Default(Some("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1"))]),
+        (at: 6, events: [Remove("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1")]),
+        (at: 9, events: [Default(Some("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:2"))]),
+    ],
+)
