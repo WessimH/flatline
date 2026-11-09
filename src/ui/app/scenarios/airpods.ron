@@ -1,0 +1,22 @@
+// FLA-2: the default output moves to the AirPods (their profile loads), then
+// back to the Scarlett (the DT 770 profile comes back).
+(
+    settings: Some((
+        onboarded: true,
+        version: 6,
+        headphone_outputs: [
+            (uid: "AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1", name: "Scarlett Solo USB", headphones: "oratory1990/Beyerdynamic DT 770 Pro"),
+            (uid: "00-11-22-33-44-55:output", name: "AirPods Pro", headphones: "Rtings/HMS II.3/Apple AirPods Pro"),
+        ],
+    )),
+    devices: [
+        ("BuiltInSpeakerDevice", "MacBook Pro Speakers"),
+        ("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1", "Scarlett Solo USB"),
+        ("00-11-22-33-44-55:output", "AirPods Pro"),
+    ],
+    default: Some("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1"),
+    steps: [
+        (at: 3, events: [Default(Some("00-11-22-33-44-55:output"))]),
+        (at: 6, events: [Default(Some("AppleUSBAudioEngine:Focusrite:Scarlett Solo USB:1"))]),
+    ],
+)

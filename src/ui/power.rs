@@ -15,7 +15,9 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
-/// Observes `NSWorkspace` sleep and wake notifications.
+/// Observes `NSWorkspace` sleep and wake notifications. The default value
+/// observes nothing: the Mac never sleeps (simulated devices, tests).
+#[derive(Default)]
 pub struct PowerWatch {
     sleeping: Arc<AtomicBool>,
     woke: Arc<AtomicBool>,

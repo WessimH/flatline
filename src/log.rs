@@ -35,6 +35,13 @@ fn timestamp() -> String {
 
 /// Appends one line to the log (and mirrors it to stderr). Never fails.
 pub fn log(msg: impl AsRef<str>) {
+    #[cfg(test)]
+    {
+        // Tests read the lines back instead of writing the user's log file.
+        CAPTURED.with(|c| c.borrow_mut().push(msg.as_ref().to_owned()));
+        return;
+    }
+    #[allow(unreachable_code)]
     let line = format!("{} UTC  {}\n", timestamp(), msg.as_ref());
     eprint!("{line}");
     let Some(p) = path() else { return };
@@ -47,6 +54,17 @@ pub fn log(msg: impl AsRef<str>) {
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
         let _ = f.write_all(line.as_bytes());
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CAPTURED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Tests only: the lines logged on this thread since the last call.
+#[cfg(test)]
+pub fn take_captured() -> Vec<String> {
+    CAPTURED.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
 #[cfg(test)]

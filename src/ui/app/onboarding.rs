@@ -1073,7 +1073,7 @@ impl FlatlineApp {
             if !self.demo && crate::login::bundle_path().is_some() && crate::login::set_enabled(true).is_ok() {
                 self.login_enabled = crate::login::is_enabled();
             }
-            if self.engine.is_none() && self.s.engine_on {
+            if self.engine_device().is_none() && self.s.engine_on {
                 self.start_engine();
             }
             self.notify("Flatline is on · press Space to compare");

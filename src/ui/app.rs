@@ -14,11 +14,13 @@ use crate::engine::{self, Device, Engine, Shared};
 use crate::profiles;
 use eframe::egui::{self, Frame, Key, Ui};
 use serde::{Deserialize, Serialize};
+use sim::Sim;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 mod onboarding;
+mod sim;
 mod views;
 
 /// [`Settings::headphone_key`] of a dropped measurement.
@@ -413,7 +415,9 @@ pub struct FlatlineApp {
     /// Message, shown since, and whether it confirms a profile switch.
     toast: Option<(String, Instant, bool)>,
     /// Self-screenshot for testing: FL_SHOT=out.png (no OS permission needed).
-    shot: Option<(std::path::PathBuf, u32, Arc<std::sync::atomic::AtomicBool>)>,
+    /// Path, times after launch (one per scenario step, then the last),
+    /// shots taken, last one written.
+    shot: Option<(std::path::PathBuf, Vec<Duration>, usize, Arc<std::sync::atomic::AtomicBool>)>,
     /// Demo mode: factory settings, never persisted.
     demo: bool,
     /// Consecutive restarts that came up blocked (drives the tap fallback).
@@ -452,42 +456,88 @@ pub struct FlatlineApp {
     forced: Option<String>,
     /// First-run setup, or the headphone picker opened from the switcher.
     onb: Option<onboarding::Onboarding>,
+    /// Time of the current frame (or of the test's poll).
+    now: Instant,
+    /// FL_SCENARIO: simulated outputs replace CoreAudio, the engine is fake.
+    sim: Option<Sim>,
 }
 
 impl FlatlineApp {
     /// Creates the app, restores the settings and starts the engine.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install(&cc.egui_ctx);
+        let now = Instant::now();
+        // FL_SCENARIO=file.ron: simulated outputs, demo mode (see `sim`).
+        let scenario = std::env::var("FL_SCENARIO").ok().map(|path| {
+            Sim::load(&path).unwrap_or_else(|e| {
+                crate::log::log(format!("scenario not loaded: {e}"));
+                sim::Scenario::default()
+            })
+        });
         // FL_DEMO=1: factory settings, nothing saved (screenshots, demos).
-        let demo = std::env::var_os("FL_DEMO").is_some();
+        let demo = std::env::var_os("FL_DEMO").is_some() || scenario.is_some();
         crate::log::log(format!(
             "Flatline {} launched (background: {}, demo: {demo})",
             env!("CARGO_PKG_VERSION"),
             std::env::args().any(|a| a == "--background")
         ));
-        let mut s: Settings = if demo {
-            Settings::default()
-        } else {
-            cc.storage.and_then(|st| eframe::get_value(st, eframe::APP_KEY)).unwrap_or_default()
+        let (s, sim) = match scenario {
+            Some(sc) => {
+                let (s, sim) = Sim::new(sc, now);
+                (s, Some(sim))
+            }
+            None => {
+                let mut s: Settings = if demo {
+                    Settings::default()
+                } else {
+                    cc.storage.and_then(|st| eframe::get_value(st, eframe::APP_KEY)).unwrap_or_default()
+                };
+                if s.version < 3 && crate::login::bundle_path().is_some() {
+                    // v3: menu-bar mode, launch at login on by default.
+                    let _ = crate::login::set_enabled(true);
+                }
+                migrate(&mut s);
+                if crate::login::is_enabled() && crate::login::bundle_path().is_some() {
+                    let _ = crate::login::set_enabled(true); // refresh the path if the app moved
+                }
+                (s, None)
+            }
         };
-        if s.version < 3 && crate::login::bundle_path().is_some() {
-            // v3: menu-bar mode, launch at login on by default.
-            let _ = crate::login::set_enabled(true);
-        }
-        migrate(&mut s);
-        if crate::login::is_enabled() && crate::login::bundle_path().is_some() {
-            let _ = crate::login::set_enabled(true); // refresh the path if the app moved
-        }
-        let background = std::env::args().any(|a| a == "--background");
         let tray = Tray::new(cc.egui_ctx.clone(), s.enabled);
-        let power = super::power::PowerWatch::new(cc.egui_ctx.clone());
+        let power = if sim.is_some() { Default::default() } else { super::power::PowerWatch::new(cc.egui_ctx.clone()) };
+        Self::build(&cc.egui_ctx, s, demo, sim, tray, power, now)
+    }
+
+    /// The app from its settings, outputs (`sim`, else CoreAudio), menu-bar
+    /// icon and sleep watch; starts the engine. Tests build it directly.
+    fn build(
+        ctx: &egui::Context,
+        s: Settings,
+        demo: bool,
+        sim: Option<Sim>,
+        tray: Option<Tray>,
+        power: super::power::PowerWatch,
+        now: Instant,
+    ) -> Self {
+        let background = std::env::args().any(|a| a == "--background");
         if background && tray.is_some() {
             tray::set_dock_visible(false);
         }
         let custom_curve = s.custom.as_ref().and_then(|c| Curve::parse(&c.csv).ok());
         let shared = Arc::new(Shared::default());
         shared.bypass.store(!s.enabled, Relaxed);
-        let now = Instant::now();
+        let (devices, default_uid) = match &sim {
+            Some(sim) => (sim.devices.clone(), sim.default.clone()),
+            None => (engine::list_output_devices(), engine::default_output_uid()),
+        };
+        let shot = std::env::var_os("FL_SHOT").map(|p| {
+            let wait: f64 = std::env::var("FL_SHOT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
+            let steps: Vec<Duration> = sim.as_ref().map(|s| s.times().collect()).unwrap_or_default();
+            // One shot just before each step, then one `wait` after the last.
+            let last = steps.last().copied().unwrap_or_default() + Duration::from_secs_f64(wait);
+            let times = steps.iter().map(|t| t.saturating_sub(Duration::from_millis(500))).chain([last]).collect();
+            (p.into(), times, 0, Default::default())
+        });
         let mut app = Self {
             shared,
             engine: None,
@@ -495,11 +545,11 @@ impl FlatlineApp {
             status: Status::Standby,
             last_restart: now - Duration::from_secs(10),
             cb_seen: (0, now),
-            devices: engine::list_output_devices(),
-            default_uid: engine::default_output_uid(),
+            devices,
+            default_uid,
             last_poll: now,
             last_device_scan: now,
-            designer: Designer::new(cc.egui_ctx.clone()),
+            designer: Designer::new(ctx.clone()),
             requested: None,
             design: None,
             design_gen: 0,
@@ -518,7 +568,7 @@ impl FlatlineApp {
             demo,
             blocked_retries: 0,
             signal_seen: false,
-            shot: std::env::var_os("FL_SHOT").map(|p| (p.into(), 0, Default::default())),
+            shot,
             hidden: background && tray.is_some(),
             power,
             started: now,
@@ -534,8 +584,10 @@ impl FlatlineApp {
             switcher_shown: false,
             bar_levels: vec![0.0; 24],
             last_clip_toast: None,
-            forced: if demo { std::env::var("FL_STATE").ok() } else { None },
+            forced: if demo && sim.is_none() { std::env::var("FL_STATE").ok() } else { None },
             onb: None,
+            now,
+            sim,
             s,
         };
         if (app.s.headphone_key == CUSTOM_KEY && app.custom_curve.is_none())
@@ -696,41 +748,77 @@ impl FlatlineApp {
 
     fn start_engine(&mut self) {
         self.engine = None; // tear down the previous tap/aggregate first
-        self.last_restart = Instant::now();
-        // Device tap first; if it keeps coming up blocked, alternate with the
-        // global-mix tap (some device states refuse the device tap).
-        let prefer_device_tap = self.blocked_retries < 2 || self.blocked_retries % 2 == 1;
-        let filters = self.design.as_ref().map(|d| d.filters.clone()).unwrap_or_default();
-        let (amount, lm) = (self.s.amount, self.s.level_match);
-        let uid = self.s.output_uid.clone().filter(|u| self.devices.iter().any(|d| &d.uid == u));
-        let frames = std::env::var("FL_BUF").ok().and_then(|v| v.parse().ok()).unwrap_or(self.s.buffer_frames);
-        match Engine::start(uid.as_deref(), frames, prefer_device_tap, self.shared.clone(), move |fs| {
-            build_eq(&filters, amount, lm, fs).0
-        }) {
-            Ok(e) => {
-                crate::log::log(format!(
-                    "engine started: {} ({}) · {:.0} Hz · {} frames · {} · in {:?} out {:?}",
-                    e.info.device.name,
-                    e.info.device.uid,
-                    e.info.sample_rate,
-                    e.info.buffer_frames,
-                    e.info.tap_mode,
-                    e.info.in_layout,
-                    e.info.out_layout
-                ));
-                self.analyzer.set_rate(e.info.sample_rate);
-                self.engine = Some(e);
+        self.last_restart = self.now;
+        let started = if let Some(sim) = &mut self.sim {
+            // Fake engine: plays on the chosen output if connected, else on
+            // the default one, like the real one.
+            let uid = self.s.output_uid.clone().filter(|u| sim.devices.iter().any(|d| &d.uid == u));
+            let uid = uid.or(sim.default.clone());
+            sim.engine = sim.devices.iter().find(|d| Some(&d.uid) == uid.as_ref()).cloned();
+            sim.engine
+                .as_ref()
+                .map(|d| format!("{} ({}) · simulated", d.name, d.uid))
+                .ok_or_else(|| "no default output device (simulated)".to_owned())
+        } else {
+            // Device tap first; if it keeps coming up blocked, alternate with the
+            // global-mix tap (some device states refuse the device tap).
+            let prefer_device_tap = self.blocked_retries < 2 || self.blocked_retries % 2 == 1;
+            let filters = self.design.as_ref().map(|d| d.filters.clone()).unwrap_or_default();
+            let (amount, lm) = (self.s.amount, self.s.level_match);
+            let uid = self.s.output_uid.clone().filter(|u| self.devices.iter().any(|d| &d.uid == u));
+            let frames = std::env::var("FL_BUF").ok().and_then(|v| v.parse().ok()).unwrap_or(self.s.buffer_frames);
+            match Engine::start(uid.as_deref(), frames, prefer_device_tap, self.shared.clone(), move |fs| {
+                build_eq(&filters, amount, lm, fs).0
+            }) {
+                Ok(e) => {
+                    let what = format!(
+                        "{} ({}) · {:.0} Hz · {} frames · {} · in {:?} out {:?}",
+                        e.info.device.name,
+                        e.info.device.uid,
+                        e.info.sample_rate,
+                        e.info.buffer_frames,
+                        e.info.tap_mode,
+                        e.info.in_layout,
+                        e.info.out_layout
+                    );
+                    self.analyzer.set_rate(e.info.sample_rate);
+                    self.engine = Some(e);
+                    Ok(what)
+                }
+                Err(err) => Err(format!("{err:#}")),
+            }
+        };
+        match started {
+            Ok(what) => {
+                crate::log::log(format!("engine started: {what}"));
                 self.engine_error = None;
                 self.status = Status::Starting;
                 self.signal_seen = false;
-                self.cb_seen = (self.shared.callbacks.load(Relaxed), Instant::now());
+                self.cb_seen = (self.shared.callbacks.load(Relaxed), self.now);
                 self.eq_key = None;
             }
             Err(err) => {
-                crate::log::log(format!("engine failed to start: {err:#}"));
-                self.engine_error = Some(format!("{err:#}"));
+                crate::log::log(format!("engine failed to start: {err}"));
+                self.engine_error = Some(err);
                 self.status = Status::Error;
             }
+        }
+    }
+
+    /// The output the engine plays on: the real engine's, or the fake one's
+    /// in a scenario.
+    fn engine_device(&self) -> Option<&Device> {
+        match &self.sim {
+            Some(sim) => sim.engine.as_ref(),
+            None => self.engine.as_ref().map(|e| &e.info.device),
+        }
+    }
+
+    /// Stops the engine, real or fake.
+    fn drop_engine(&mut self) {
+        self.engine = None;
+        if let Some(sim) = &mut self.sim {
+            sim.engine = None;
         }
     }
 
@@ -751,9 +839,9 @@ impl FlatlineApp {
         let paused = self.status == Status::Speakers;
         match route_decision(want.as_deref(), changed, &self.s.headphone_outputs, &self.s.headphone_key) {
             Route::Pause => {
-                if !paused || self.engine.is_some() {
+                if !paused || self.engine_device().is_some() {
                     crate::log::log("built-in speakers: no correction");
-                    self.engine = None;
+                    self.drop_engine();
                     self.status = Status::Speakers;
                 }
                 return true;
@@ -779,7 +867,7 @@ impl FlatlineApp {
     }
 
     fn stop_engine(&mut self) {
-        self.engine = None;
+        self.drop_engine();
         self.status = Status::Standby;
     }
 
@@ -809,7 +897,7 @@ impl FlatlineApp {
     }
 
     fn tray_status(&self) -> String {
-        let device = self.engine.as_ref().map_or(String::new(), |e| e.info.device.name.clone());
+        let device = self.engine_device().map_or(String::new(), |d| d.name.clone());
         match self.status {
             Status::Live => format!("● Live · {device}"),
             Status::Starting => "Starting…".into(),
@@ -822,13 +910,13 @@ impl FlatlineApp {
     }
 
     fn notify(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now(), false));
+        self.toast = Some((msg.into(), self.now, false));
     }
 
     /// Toast with a check mark: the profile of the new output is loaded.
     fn notify_switched(&mut self) {
         let msg = format!("Switched to {} profile", self.headphone_label().0);
-        self.toast = Some((msg, Instant::now(), true));
+        self.toast = Some((msg, self.now, true));
     }
 
     fn handle_drops(&mut self, ctx: &egui::Context) {
@@ -910,6 +998,94 @@ impl FlatlineApp {
         }
     }
 
+    /// Every 250 ms: reads the outputs, follows the output change, watches
+    /// the engine's health and restarts it when needed.
+    fn poll(&mut self, now: Instant) {
+        self.now = now;
+        self.last_poll = now;
+        if let Some(sim) = &mut self.sim {
+            let forget = sim.advance(now);
+            if sim.engine.is_some() {
+                // The fake engine runs: one callback per poll.
+                self.shared.callbacks.fetch_add(1, Relaxed);
+            }
+            self.devices = sim.devices.clone();
+            self.default_uid = sim.default.clone();
+            for uid in forget {
+                if let Some(i) = self.s.headphone_outputs.iter().position(|o| o.uid == uid) {
+                    self.forget_output(i);
+                }
+            }
+        } else {
+            if now - self.last_device_scan > Duration::from_secs(2) {
+                self.last_device_scan = now;
+                self.devices = engine::list_output_devices();
+            }
+            self.default_uid = engine::default_output_uid();
+        }
+        let routed_away = self.forced.is_none() && self.route();
+        if self.power.take_woke() {
+            crate::log::log("system woke up: restarting the engine");
+            self.blocked_retries = 0;
+            if self.s.engine_on && !routed_away {
+                self.start_engine();
+            }
+        }
+        if self.power.is_sleeping() {
+            if self.engine_device().is_some() && self.status != Status::Asleep {
+                crate::log::log("system going to sleep: engine paused");
+                self.status = Status::Asleep;
+            }
+        } else if let Some(device) = self.engine_device().cloned() {
+            let cb = self.shared.callbacks.load(Relaxed);
+            let before = self.status;
+            if cb != self.cb_seen.0 {
+                self.cb_seen = (cb, now);
+                self.status = Status::Live;
+                self.blocked_retries = 0;
+            } else if self.status == Status::Live && now - self.cb_seen.1 > Duration::from_millis(1500) {
+                // Was running, then stopped (device gone, coreaudiod restart…).
+                self.status = Status::Blocked;
+            } else if self.status != Status::Live && now - self.last_restart > START_GRACE {
+                self.status = Status::Blocked;
+            }
+            if self.status != before {
+                let since_start = (now - self.last_restart).as_millis();
+                let tap_mode = self.engine.as_ref().map_or("simulated", |e| e.info.tap_mode);
+                crate::log::log(format!(
+                    "status {before:?} → {:?} ({tap_mode}, {since_start} ms after start)",
+                    self.status
+                ));
+            }
+            let retry_blocked = self.status == Status::Blocked
+                && now - self.last_restart > START_GRACE + retry_delay(self.blocked_retries);
+            let want = self.want_uid();
+            let moved = want.as_deref().is_some_and(|w| w != device.uid);
+            let (rate_changed, alive) = match &self.engine {
+                Some(e) => {
+                    (e.current_sample_rate().is_some_and(|r| (r - e.info.sample_rate).abs() > 1.0), e.device_alive())
+                }
+                None => (false, self.devices.iter().any(|d| d.uid == device.uid)),
+            };
+            if retry_blocked
+                || ((moved || rate_changed || !alive) && now - self.last_restart > Duration::from_millis(1500))
+            {
+                let why = if retry_blocked {
+                    self.blocked_retries += 1;
+                    format!("still blocked (retry {})", self.blocked_retries)
+                } else if moved {
+                    format!("output moved to {}", want.as_deref().unwrap_or("?"))
+                } else if rate_changed {
+                    "sample rate changed".to_owned()
+                } else {
+                    "device disconnected".to_owned()
+                };
+                crate::log::log(format!("restarting engine: {why}"));
+                self.start_engine();
+            }
+        }
+    }
+
     fn eq_text(&self) -> String {
         let Some(d) = &self.design else { return String::new() };
         let mut s = format!("Preamp: {:.1} dB\n", self.preamp_db);
@@ -932,6 +1108,7 @@ impl eframe::App for FlatlineApp {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
+        self.now = now;
 
         // Correction design (worker thread).
         let key = self.design_key();
@@ -968,68 +1145,7 @@ impl eframe::App for FlatlineApp {
 
         // Engine health, device changes.
         if now - self.last_poll > Duration::from_millis(250) {
-            self.last_poll = now;
-            if now - self.last_device_scan > Duration::from_secs(2) {
-                self.last_device_scan = now;
-                self.devices = engine::list_output_devices();
-            }
-            self.default_uid = engine::default_output_uid();
-            let routed_away = self.forced.is_none() && self.route();
-            if self.power.take_woke() {
-                crate::log::log("system woke up: restarting the engine");
-                self.blocked_retries = 0;
-                if self.s.engine_on && !routed_away {
-                    self.start_engine();
-                }
-            }
-            if self.power.is_sleeping() {
-                if self.engine.is_some() && self.status != Status::Asleep {
-                    crate::log::log("system going to sleep: engine paused");
-                    self.status = Status::Asleep;
-                }
-            } else if let Some(e) = &self.engine {
-                let cb = self.shared.callbacks.load(Relaxed);
-                let before = self.status;
-                if cb != self.cb_seen.0 {
-                    self.cb_seen = (cb, now);
-                    self.status = Status::Live;
-                    self.blocked_retries = 0;
-                } else if self.status == Status::Live && now - self.cb_seen.1 > Duration::from_millis(1500) {
-                    // Was running, then stopped (device gone, coreaudiod restart…).
-                    self.status = Status::Blocked;
-                } else if self.status != Status::Live && now - self.last_restart > START_GRACE {
-                    self.status = Status::Blocked;
-                }
-                if self.status != before {
-                    let since_start = (now - self.last_restart).as_millis();
-                    crate::log::log(format!(
-                        "status {before:?} → {:?} ({}, {since_start} ms after start)",
-                        self.status, e.info.tap_mode
-                    ));
-                }
-                let retry_blocked = self.status == Status::Blocked
-                    && now - self.last_restart > START_GRACE + retry_delay(self.blocked_retries);
-                let want = self.want_uid();
-                let moved = want.as_deref().is_some_and(|w| w != e.info.device.uid);
-                let rate_changed = e.current_sample_rate().is_some_and(|r| (r - e.info.sample_rate).abs() > 1.0);
-                let alive = e.device_alive();
-                if retry_blocked
-                    || ((moved || rate_changed || !alive) && now - self.last_restart > Duration::from_millis(1500))
-                {
-                    let why = if retry_blocked {
-                        self.blocked_retries += 1;
-                        format!("still blocked (retry {})", self.blocked_retries)
-                    } else if moved {
-                        format!("output moved to {}", want.as_deref().unwrap_or("?"))
-                    } else if rate_changed {
-                        "sample rate changed".to_owned()
-                    } else {
-                        "device disconnected".to_owned()
-                    };
-                    crate::log::log(format!("restarting engine: {why}"));
-                    self.start_engine();
-                }
-            }
+            self.poll(now);
         }
 
         // Menu bar: red close button hides to the menu bar instead of quitting.
@@ -1111,7 +1227,7 @@ impl eframe::App for FlatlineApp {
         self.apply_forced();
 
         let report = format!(
-            "status={:?} hidden={} tray={} login={} io_offset={} fs={} buffer={} load={:.3}\n",
+            "status={:?} hidden={} tray={} login={} io_offset={} fs={} buffer={} load={:.3} headphones={} invite={:?}\n",
             self.status,
             self.hidden,
             self.tray.is_some(),
@@ -1119,20 +1235,32 @@ impl eframe::App for FlatlineApp {
             self.shared.io_offset.load(),
             self.fs(),
             self.engine.as_ref().map_or(0, |e| e.info.buffer_frames),
-            self.load
+            self.load,
+            self.s.headphone_key,
+            self.invite,
         );
-        let since_start = self.started.elapsed().as_secs_f64();
-        if let Some((path, fired, done)) = &mut self.shot {
-            let wait: f64 = std::env::var("FL_SHOT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
-            if *fired == 0 && since_start >= wait {
-                *fired = 1;
+        let since_start = self.started.elapsed();
+        let numbered = self.sim.is_some();
+        if let Some((path, times, fired, done)) = &mut self.shot {
+            if times.get(*fired).is_some_and(|&t| since_start >= t) {
+                *fired += 1;
+                let last = *fired == times.len();
+                // With a scenario: shot-01.png before step 1, …, then the last one.
+                let path = if numbered {
+                    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                    path.with_file_name(format!("{stem}-{fired:02}.png"))
+                } else {
+                    path.clone()
+                };
                 let _ = std::fs::write(path.with_extension("txt"), report);
-                let (path, done) = (path.clone(), done.clone());
+                let done = done.clone();
                 ctx.request_screenshot(move |img| {
                     let [w, h] = img.size;
                     let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
                     let _ = super::icon::write_png(&path, w as u32, h as u32, &rgba);
-                    done.store(true, Relaxed);
+                    if last {
+                        done.store(true, Relaxed);
+                    }
                 });
             }
             if done.load(Relaxed) {
@@ -1159,6 +1287,10 @@ impl eframe::App for FlatlineApp {
                 self.view(ui);
             }
         });
+    }
+
+    fn persist_egui_memory(&self) -> bool {
+        self.sim.is_none() // a scenario leaves the settings file untouched
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

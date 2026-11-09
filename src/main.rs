@@ -95,6 +95,8 @@ fn main() -> anyhow::Result<()> {
             .with_icon(Arc::new(ui::icon::window_icon()))
             // Launched at login: start hidden in the menu bar.
             .with_visible(!has("--background")),
+        // A scenario (FL_SCENARIO) leaves the settings file untouched.
+        persist_window: std::env::var_os("FL_SCENARIO").is_none(),
         ..Default::default()
     };
     eframe::run_native("Flatline", options, Box::new(|cc| Ok(Box::new(ui::app::FlatlineApp::new(cc)))))
