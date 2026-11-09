@@ -204,16 +204,21 @@ impl FlatlineApp {
             None => "NOW CALIBRATING".to_owned(),
         };
         ui.label(widgets::eyebrow(&eyebrow, MIST));
-        // Fit the title to the column.
+        // Fit the title to the column, as in the mockups: the first line may
+        // use the whole width, the last one leaves room for the switcher
+        // (chevron + "Change").
         let width = ui.available_width();
-        let mut size: f32 = 80.0;
-        for line in [Some(&l1), l2.as_ref()].into_iter().flatten() {
+        let switcher_w = 140.0;
+        let last = if l2.is_some() { 1 } else { 0 };
+        let mut size: f32 = 120.0;
+        for (k, line) in [Some(&l1), l2.as_ref()].into_iter().flatten().enumerate() {
+            let room = if k == last { width - switcher_w } else { width };
             let g = ui.painter().layout_job(widgets::tight(line, display(size), MILK, -0.045));
-            if g.size().x > width - 110.0 {
-                size *= (width - 110.0) / g.size().x;
+            if g.size().x > room {
+                size *= room / g.size().x;
             }
         }
-        let size = size.clamp(36.0, 80.0);
+        let size = size.clamp(36.0, 120.0);
         ui.spacing_mut().item_spacing.y = 0.0;
         if l2.is_none() {
             self.title_line(ui, &l1, size, true);
@@ -221,7 +226,7 @@ impl FlatlineApp {
             self.title_line(ui, &l1, size, false);
             self.title_line(ui, l2.as_deref().unwrap_or_default(), size, true);
         }
-        ui.add_space(14.0);
+        ui.add_space(24.0);
         ui.spacing_mut().item_spacing.y = 14.0;
         let mut sub = format!("Tuned to {} · {} bands", self.target_name(), self.s.params.n_filters);
         if let Some(v) = variant {
@@ -246,9 +251,10 @@ impl FlatlineApp {
             });
         }
 
-        // Power row pinned to the bottom of the column.
+        // Power row right under the content, with a fixed gap.
+        ui.add_space(30.0);
         let rest = ui.available_rect_before_wrap();
-        let row = Rect::from_min_max(Pos2::new(rest.left(), rest.bottom() - 130.0), rest.max);
+        let row = Rect::from_min_size(rest.min, Vec2::new(rest.width(), 130.0));
         ui.scope_builder(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 22.0;
             let can_toggle = matches!(self.status, Status::Live | Status::Starting);
@@ -344,15 +350,18 @@ impl FlatlineApp {
             // Deviation from target, huge and thin.
             let (before, after) = self.design.as_ref().map_or((0.0, 0.0), |d| (d.error_before_db, d.error_after_db));
             let value = match self.status {
-                Status::Live | Status::Starting if self.s.enabled => format!("{after:.1}"),
-                Status::Live | Status::Starting => format!("{before:.1}"),
-                _ => "—".to_owned(),
+                Status::Live | Status::Starting if self.s.enabled => Some(format!("{after:.1}")),
+                Status::Live | Status::Starting => Some(format!("{before:.1}")),
+                _ => None,
             };
-            let unit = p.layout_no_wrap("dB\noff target".into(), body(14.0), MIST);
-            let num = p.layout_no_wrap(value, thin(66.0), MILK);
-            let ux = head.right() - unit.size().x;
-            p.galley(Pos2::new(ux, head.top() + 22.0), unit, MIST);
-            p.galley(Pos2::new(ux - 10.0 - num.size().x, head.top() - 6.0), num, MILK);
+            // Without a value (speakers, paused) the block is not drawn.
+            if let Some(value) = value {
+                let unit = p.layout_no_wrap("dB\noff target".into(), body(14.0), MIST);
+                let num = p.layout_no_wrap(value, thin(66.0), MILK);
+                let ux = head.right() - unit.size().x;
+                p.galley(Pos2::new(ux, head.top() + 22.0), unit, MIST);
+                p.galley(Pos2::new(ux - 10.0 - num.size().x, head.top() - 6.0), num, MILK);
+            }
 
             let plot = Rect::from_min_max(Pos2::new(inner.left(), head.bottom() + 12.0), inner.max);
             ui.scope_builder(UiBuilder::new().max_rect(plot), |ui| {
@@ -388,7 +397,8 @@ impl FlatlineApp {
     /// A state card of `height`, centred in the plot of the chart at `area`.
     fn card_rect(area: Rect, height: f32) -> Rect {
         // Below the chart header and legend.
-        let plot = Rect::from_min_max(area.min + Vec2::new(0.0, 92.0), area.max);
+        let plot = Rect::from_min_max(area.min + Vec2::new(0.0, 92.0), area.max - Vec2::new(0.0, 44.0));
+        let height = height.min(plot.height() - 16.0);
         Rect::from_center_size(plot.center(), Vec2::new((area.width() - 120.0).min(560.0), height))
     }
 
@@ -404,16 +414,18 @@ impl FlatlineApp {
         let p = ui.painter();
         p.rect_filled(card, CornerRadius::same(28), Color32::from_rgba_unmultiplied(26, 22, 28, 238));
         p.rect_stroke(card, CornerRadius::same(28), Stroke::new(1.0, alpha(color, 0.35)), StrokeKind::Inside);
-        let ic = Pos2::new(card.center().x, card.top() + 56.0);
-        p.circle_filled(ic, 28.0, alpha(color, 0.14));
-        p.circle_stroke(ic, 28.0, Stroke::new(1.0, alpha(color, 0.5)));
-        widgets::draw_icon(p, icon, ic, 26.0, color);
+        // Tighter when the chart is short.
+        let k = (card.height() / 290.0).clamp(0.6, 1.0);
+        let ic = Pos2::new(card.center().x, card.top() + 56.0 * k);
+        p.circle_filled(ic, 28.0 * k, alpha(color, 0.14));
+        p.circle_stroke(ic, 28.0 * k, Stroke::new(1.0, alpha(color, 0.5)));
+        widgets::draw_icon(p, icon, ic, 26.0 * k, color);
         let inner = Rect::from_min_max(
-            Pos2::new(card.left() + 36.0, card.top() + 100.0),
-            Pos2::new(card.right() - 36.0, card.bottom() - 24.0),
+            Pos2::new(card.left() + 36.0, card.top() + 100.0 * k),
+            Pos2::new(card.right() - 36.0, card.bottom() - 24.0 * k),
         );
         ui.scope_builder(UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Center)), |ui| {
-            ui.spacing_mut().item_spacing.y = 10.0;
+            ui.spacing_mut().item_spacing.y = 10.0 * k;
             ui.label(RichText::new(title_text).font(title(26.0)).color(MILK));
             ui.label(RichText::new(body_text).font(body(15.0)).color(MIST));
             ui.add_space(8.0);
@@ -605,12 +617,19 @@ impl FlatlineApp {
         });
         let p = ui.painter();
         let size = (r.height() * 0.4).min(104.0);
-        let num = p.layout_no_wrap(ms.map_or("—".into(), |m| format!("{m:.1}")), thin(size), MILK);
-        let unit = p.layout_no_wrap("ms".into(), body(size * 0.27), MILK);
         let base = r.left_top() + Vec2::new(18.0, 48.0);
-        let num_size = num.size();
-        p.galley(base, num, MILK);
-        p.galley(Pos2::new(base.x + num_size.x + 4.0, base.y + num_size.y * 0.80 - unit.size().y), unit, MILK);
+        if let Some(ms) = ms {
+            let num = p.layout_no_wrap(format!("{ms:.1}"), thin(size), MILK);
+            let unit = p.layout_no_wrap("ms".into(), body(size * 0.27), MILK);
+            let num_size = num.size();
+            p.galley(base, num, MILK);
+            p.galley(Pos2::new(base.x + num_size.x + 4.0, base.y + num_size.y * 0.80 - unit.size().y), unit, MILK);
+        } else {
+            // Engine not running: say it, on the same baseline as the number.
+            let text = p.layout_no_wrap("Not running".into(), thin(size * 0.3), MIST);
+            let line = p.layout_no_wrap("0.0".into(), thin(size), MILK).size().y * 0.80;
+            p.galley(Pos2::new(base.x, base.y + line - text.size().y), text, MIST);
+        }
         p.text(
             r.left_bottom() + Vec2::new(22.0, -20.0),
             Align2::LEFT_BOTTOM,

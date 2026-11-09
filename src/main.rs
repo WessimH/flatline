@@ -83,11 +83,16 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    // FL_WINDOW=1920x1200: open the window at this size (testing).
+    let size = std::env::var("FL_WINDOW")
+        .ok()
+        .and_then(|v| v.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?])))
+        .unwrap_or([1320.0, 880.0]);
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Flatline")
             .with_app_id("dev.flatline.app")
-            .with_inner_size([1320.0, 880.0])
+            .with_inner_size(size)
             .with_min_inner_size([1060.0, 700.0])
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
@@ -96,7 +101,7 @@ fn main() -> anyhow::Result<()> {
             // Launched at login: start hidden in the menu bar.
             .with_visible(!has("--background")),
         // A scenario (FL_SCENARIO) leaves the settings file untouched.
-        persist_window: std::env::var_os("FL_SCENARIO").is_none(),
+        persist_window: std::env::var_os("FL_SCENARIO").is_none() && std::env::var_os("FL_WINDOW").is_none(),
         ..Default::default()
     };
     eframe::run_native("Flatline", options, Box::new(|cc| Ok(Box::new(ui::app::FlatlineApp::new(cc)))))
